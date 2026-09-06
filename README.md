@@ -16,14 +16,27 @@ Local path install: the code on disk is the code that runs. `pi update --all` do
 ## Usage
 
 ```
-/loop <interval> [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prompt | @file>
+/loop [flags] <text with an interval phrase> [flags]
 /loop list          same as bare /loop
 /loop stop <name>
 /loop pause <name>
 /loop resume <name>
 ```
 
-- Interval: `5m`, `2h`, `1d`. Minimum `1m`.
+The interval phrase is cut out of the text; what remains is the prompt.
+
+```
+/loop 5m check the build
+/loop every 30 minutes review the open PRs
+/loop check the build hourly
+/loop check the build, every 2 hours, and report
+/loop run the smoke test every 1h30m --name smoke --max 6
+/loop every 50 min @prompt.md
+```
+
+- Interval forms: `5m`, `5 min`, `2 hours`, `1d`, `hourly`, `daily`, `every hour`, `each day`, `1h30m`, `1 hour 30 minutes`. Minimum `1m`.
+- At the head or the tail of the text any form counts. In the middle only an `every`/`each` phrase counts, so `wait 5 minutes then retry` is prompt text, not an interval. Two phrases reject; say one.
+- Flags: `--name <n>`, `--max <n>`, `--until <ISO|HH:mm>`. Head or tail, never inside the prompt.
 - The loop fires once on create, then every interval, counted from the fire itself. A tick that comes due while the agent is busy fires once when the agent settles.
 - `@path` reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in `/loop list`; the loop stays alive.
 - `--name` defaults to `loop-<k>` with the lowest free `k`.
@@ -40,7 +53,7 @@ Each fire is one user message:
 ## State
 
 ```
-<cwd>/.pi-loop/loops.json   every loop: name, interval, prompt source, dueAt, fires, paused, bounds, last error
+<cwd>/.pi-loop/loops.json   every loop: name, intervalMs, prompt source, dueAt, fires, paused, bounds, last error
 <cwd>/.pi-loop/owner.json   {pid, sessionId, claimedAt}: the one session in this cwd that fires
 ```
 

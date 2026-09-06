@@ -29,7 +29,7 @@ export interface OwnerFile {
 
 export interface LoopFile {
   name: string;
-  interval: string;
+  intervalMs: number;
   prompt: { kind: "text"; text: string } | { kind: "file"; path: string };
   dueAt: number;
   fires: number;

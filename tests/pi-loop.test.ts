@@ -30,28 +30,73 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
     expect(s.fires[0]?.options).toBeUndefined();
   });
 
-  test("interval syntax 5m, 2h, 1d parses; below 1m or unparsable rejects and creates nothing", async () => {
+  test("the interval phrase may lead or trail the prompt, with or without every/each", async () => {
     const s = ws.startSession();
-    await s.command("2h a");
-    await s.command("1d b");
-    await s.command("1m c");
-    expect(ws.loops().map((l) => l.interval)).toEqual(["2h", "1d", "1m"]);
-    expect(s.fires).toHaveLength(3);
+    const cases: Array<[string, string, number]> = [
+      ["5m check the build", "check the build", 5 * MIN],
+      ["every 5 minutes check the build", "check the build", 5 * MIN],
+      ["each 2 hours, check the build", "check the build", 120 * MIN],
+      ["hourly check the build", "check the build", 60 * MIN],
+      ["daily: check the build", "check the build", 1440 * MIN],
+      ["check the build every 5 minutes", "check the build", 5 * MIN],
+      ["check the build, every 5 min.", "check the build", 5 * MIN],
+      ["check the build 2h", "check the build", 120 * MIN],
+      ["check the build and every hour", "check the build", 60 * MIN],
+      ["check the build every 1 hour 30 minutes", "check the build", 90 * MIN],
+      ["1h30m check the build", "check the build", 90 * MIN],
+      ["every day check the build", "check the build", 1440 * MIN],
+    ];
+    for (const [input, prompt, ms] of cases) {
+      s.fires.length = 0;
+      await s.command(`--name c ${input}`);
+      expect(s.fires.map((f) => f.text.split("\n").slice(1).join("\n"))).toEqual([prompt]);
+      expect(ws.loops().at(-1)?.intervalMs).toBe(ms);
+      await s.command("stop c");
+    }
+  });
 
-    for (const bad of ["30s x", "0m x", "5 x", "5x x", "m x", "1.5h x", "-5m x"]) {
+  test("in the middle of the text only every/each counts, and it is cut out cleanly", async () => {
+    const s = ws.startSession();
+    await s.command("check the build every 5 minutes and report");
+    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:00]\ncheck the build and report");
+    await s.command("check the build, every 5 minutes, then report");
+    expect(s.fires[1]?.text).toBe("[loop loop-2 #1 2026-09-06 10:00]\ncheck the build then report");
+
+    // A bare duration in the middle is prompt text, not an interval.
+    s.clearNotices();
+    await s.command("wait 5 minutes then check the build");
+    expect(s.notices).toEqual([{ message: "no interval found: say 5m, every 2 hours, hourly, or daily", type: "error" }]);
+    await s.command("hourly wait 5 minutes then check the build");
+    expect(s.fires[2]?.text).toBe("[loop loop-3 #1 2026-09-06 10:00]\nwait 5 minutes then check the build");
+  });
+
+  test("two interval phrases reject with both shown and create nothing", async () => {
+    const s = ws.startSession();
+    await s.command("5m check the build every 2 hours");
+    expect(s.notices).toEqual([{ message: 'more than one interval: "5m" and "every 2 hours"; say one', type: "error" }]);
+    expect(ws.loops()).toHaveLength(0);
+    expect(s.fires).toHaveLength(0);
+  });
+
+  test("below 1m, no unit, unknown unit, or no interval at all rejects and creates nothing", async () => {
+    const s = ws.startSession();
+    for (const bad of ["30 seconds x", "30s x", "0m x", "every 0 minutes x", "5 x", "5x x", "m x", "check the build"]) {
       s.clearNotices();
       await s.command(bad);
       expect(s.lastNotice()).toMatch(/interval/);
       expect(s.notices[0]?.type).toBe("error");
     }
-    expect(ws.loops()).toHaveLength(3);
-    expect(s.fires).toHaveLength(3);
+    expect(ws.loops()).toHaveLength(0);
+    expect(s.fires).toHaveLength(0);
   });
 
   test("an interval with no prompt rejects and creates nothing", async () => {
     const s = ws.startSession();
-    await s.command("5m");
-    expect(s.notices[0]?.type).toBe("error");
+    for (const bad of ["5m", "every 5 minutes", "hourly."]) {
+      s.clearNotices();
+      await s.command(bad);
+      expect(s.lastNotice()).toMatch(/missing prompt/);
+    }
     expect(ws.loops()).toHaveLength(0);
     expect(s.fires).toHaveLength(0);
   });
@@ -421,7 +466,7 @@ describe("AC-8 names", () => {
     await s.command("10m --name nightly b");
     expect(s.notices).toEqual([{ message: "loop nightly already exists", type: "error" }]);
     expect(ws.loops()).toHaveLength(1);
-    expect(ws.loops()[0]?.interval).toBe("5m");
+    expect(ws.loops()[0]?.intervalMs).toBe(5 * MIN);
     expect(s.fires).toHaveLength(1);
 
     // A default name that collides with an explicit one is skipped, not duplicated.
@@ -438,6 +483,27 @@ describe("AC-8 names", () => {
       expect(s.notices[0]?.type).toBe("error");
     }
     expect(ws.loops()).toHaveLength(0);
+  });
+
+  test("flags may come at the head or the tail, before or after the interval, never inside the prompt", async () => {
+    const s = ws.startSession();
+    await s.command("--name a 5m ping");
+    await s.command("5m --name b ping");
+    await s.command("--name c ping every 5m");
+    await s.command("5m ping --name d");
+    await s.command("run the smoke test every 2 hours --name e --max 6");
+    await s.command("ping --name f pong 5m");
+    expect(ws.loops().map((l) => [l.name, l.prompt, l.max])).toEqual([
+      ["a", { kind: "text", text: "ping" }, undefined],
+      ["b", { kind: "text", text: "ping" }, undefined],
+      ["c", { kind: "text", text: "ping" }, undefined],
+      ["d", { kind: "text", text: "ping" }, undefined],
+      ["e", { kind: "text", text: "run the smoke test" }, 6],
+      ["loop-1", { kind: "text", text: "ping --name f pong" }, undefined],
+    ]);
+    s.clearNotices();
+    await s.command("5m ping --max x");
+    expect(s.notices).toEqual([{ message: 'bad --max "x": positive integer', type: "error" }]);
   });
 });
 

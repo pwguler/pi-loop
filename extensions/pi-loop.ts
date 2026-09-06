@@ -12,6 +12,29 @@ const STATE_DIR = ".pi-loop";
 const MIN_INTERVAL_MS = 60_000;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+// Interval grammar. A phrase is an optional every/each, then either a bare
+// unit word (hourly, hour, day, ...) or one or more <n><unit> pairs (5m, 5 min,
+// 2 hours, 1h30m, 1 hour 30 minutes).
+const UNIT = "(?:minutes|minute|mins|min|m|hours|hour|hrs|hr|h|days|day|d)";
+const BARE_UNIT = "(?:hourly|daily|minute|hour|day)";
+// After a unit: end, a non-word character, or a digit starting the next pair (1h30m).
+const AFTER_UNIT = "(?=$|\\W|\\d)";
+const NUMBER_UNIT = new RegExp(`(\\d+)\\s*${UNIT}${AFTER_UNIT}`, "g");
+const PHRASE = new RegExp(
+  `(?:(every|each)\\s+)?(?:${BARE_UNIT}\\b|\\d+\\s*${UNIT}${AFTER_UNIT}(?:\\s*\\d+\\s*${UNIT}${AFTER_UNIT})*)`,
+  "gi",
+);
+const UNIT_MS: Record<string, number> = {
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+  hourly: 3_600_000,
+  daily: 86_400_000,
+  minute: 60_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+};
+
 // The narrow slice of pi's API this extension uses. The default export is
 // typed against ExtensionAPI, so tsc checks that pi still satisfies it.
 
@@ -47,7 +70,7 @@ export type PromptSource = { kind: "text"; text: string } | { kind: "file"; path
 
 export interface Loop {
   name: string;
-  interval: string;
+  intervalMs: number;
   prompt: PromptSource;
   /** Instant at which the next fire may happen. */
   dueAt: number;
@@ -97,8 +120,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     if (!ctx.isIdle()) return undefined;
     const due = loops.find((l) => !l.paused && l.dueAt <= now);
     if (!due) return undefined;
-    const intervalMs = parseInterval(due.interval) ?? MIN_INTERVAL_MS;
-    due.dueAt = now + intervalMs;
+    due.dueAt = now + due.intervalMs;
     const prompt = readPrompt(ctx.cwd, due.prompt);
     if (!prompt.ok) {
       due.lastError = prompt.error;
@@ -144,7 +166,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   });
 
   pi.registerCommand("loop", {
-    description: "Fire a prompt on an interval: /loop <5m|2h|1d> [--name n] [--max n] [--until t] <prompt | @file>; /loop list | stop | pause | resume <name>",
+    description: "Fire a prompt on an interval: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>; /loop list | stop | pause | resume <name>",
     handler: async (args, ctx) => {
       const now = deps.now();
       const parsed = parseCommand(args, now);
@@ -192,7 +214,7 @@ export function run(pi: LoopHost, deps: Deps): void {
           return;
         }
         loop.paused = false;
-        loop.dueAt = now + (parseInterval(loop.interval) ?? MIN_INTERVAL_MS);
+        loop.dueAt = now + loop.intervalMs;
         saveLoops(ctx.cwd, loops);
         ctx.ui.notify(`resumed ${loop.name}, next ${formatLocal(loop.dueAt)}`, "info");
         return;
@@ -206,7 +228,7 @@ export function run(pi: LoopHost, deps: Deps): void {
         }
         const loop: Loop = {
           name,
-          interval: cmd.interval,
+          intervalMs: cmd.intervalMs,
           prompt: cmd.prompt,
           dueAt: now,
           fires: 0,
@@ -217,7 +239,7 @@ export function run(pi: LoopHost, deps: Deps): void {
         loops.push(loop);
         saveLoops(ctx.cwd, loops);
         const owner = otherOwner(ctx, deps);
-        ctx.ui.notify(`created ${name}, every ${cmd.interval}${owner === undefined ? "" : `, owned by pid ${owner}`}`, "info");
+        ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}`, "info");
         tick();
       }
     },
@@ -229,7 +251,15 @@ export function run(pi: LoopHost, deps: Deps): void {
 type Command =
   | { kind: "list" }
   | { kind: "stop" | "pause" | "resume"; name: string }
-  | { kind: "create"; interval: string; prompt: PromptSource; name?: string; max?: number; until?: number };
+  | { kind: "create"; intervalMs: number; prompt: PromptSource; name?: string; max?: number; until?: number };
+
+interface Flags {
+  name?: string;
+  max?: number;
+  until?: number;
+}
+
+const USAGE = "usage: /loop [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prompt with an interval: 5m, every 2 hours, hourly, daily | @file>";
 
 function parseCommand(args: string, now: number): Result<Command> {
   const [head, rest] = nextToken(args);
@@ -240,42 +270,69 @@ function parseCommand(args: string, now: number): Result<Command> {
     return { ok: true, value: { kind: head, name } };
   }
 
-  const usage = "usage: /loop <5m|2h|1d> [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prompt | @file>";
-  const intervalMs = parseInterval(head);
-  if (intervalMs === undefined) {
-    return { ok: false, error: `bad interval "${head}": use <n>m, <n>h, or <n>d, minimum 1m` };
-  }
+  // Flags sit at the head or the tail, before or after the interval; never inside the prompt.
+  const flags: Flags = {};
+  const first = stripFlags(args, flags, now);
+  if (!first.ok) return first;
+  const interval = parseIntervalPhrase(first.value);
+  if (!interval.ok) return interval;
+  const second = stripFlags(interval.value.rest, flags, now);
+  if (!second.ok) return second;
+  const third = stripTailFlags(second.value, flags, now);
+  if (!third.ok) return third;
 
-  let remainder = rest;
-  let name: string | undefined;
-  let max: number | undefined;
-  let until: number | undefined;
-  while (remainder.trimStart().startsWith("--")) {
-    const [flag, afterFlag] = nextToken(remainder);
-    const [value, afterValue] = nextToken(afterFlag);
-    if (value === "") return { ok: false, error: `${flag} needs a value. ${usage}` };
-    remainder = afterValue;
-    if (flag === "--name") {
-      if (!NAME_PATTERN.test(value)) return { ok: false, error: `bad name "${value}": letters, digits, . _ - only` };
-      name = value;
-    } else if (flag === "--max") {
-      if (!/^[1-9]\d*$/.test(value)) return { ok: false, error: `bad --max "${value}": positive integer` };
-      max = Number(value);
-    } else if (flag === "--until") {
-      const parsed = parseUntil(value, now);
-      if (!parsed.ok) return parsed;
-      until = parsed.value;
-    } else {
-      return { ok: false, error: `unknown flag ${flag}. ${usage}` };
-    }
-  }
-
-  const promptText = remainder.trim();
-  if (promptText === "") return { ok: false, error: `missing prompt. ${usage}` };
+  const promptText = third.value.trim();
+  if (promptText === "") return { ok: false, error: `missing prompt. ${USAGE}` };
   const prompt: PromptSource = promptText.startsWith("@")
     ? { kind: "file", path: promptText.slice(1) }
     : { kind: "text", text: promptText };
-  return { ok: true, value: { kind: "create", interval: head, prompt, name, max, until } };
+  return {
+    ok: true,
+    value: { kind: "create", intervalMs: interval.value.ms, prompt, name: flags.name, max: flags.max, until: flags.until },
+  };
+}
+
+/** Consume leading --flag value pairs into flags; returns the remaining text. */
+function stripFlags(text: string, flags: Flags, now: number): Result<string> {
+  let remainder = text;
+  while (remainder.trimStart().startsWith("--")) {
+    const [flag, afterFlag] = nextToken(remainder);
+    const [value, afterValue] = nextToken(afterFlag);
+    if (value === "") return { ok: false, error: `${flag} needs a value. ${USAGE}` };
+    const applied = applyFlag(flag, value, flags, now);
+    if (!applied.ok) return applied;
+    remainder = afterValue;
+  }
+  return { ok: true, value: remainder };
+}
+
+/** Consume trailing --flag value pairs into flags; returns the remaining text. */
+function stripTailFlags(text: string, flags: Flags, now: number): Result<string> {
+  let remainder = text;
+  for (;;) {
+    const m = /(?:^|\s)(--\S+)\s+(\S+)\s*$/.exec(remainder);
+    if (!m || m[1] === undefined || m[2] === undefined) return { ok: true, value: remainder };
+    const applied = applyFlag(m[1], m[2], flags, now);
+    if (!applied.ok) return applied;
+    remainder = remainder.slice(0, m.index);
+  }
+}
+
+function applyFlag(flag: string, value: string, flags: Flags, now: number): Result<void> {
+  if (flag === "--name") {
+    if (!NAME_PATTERN.test(value)) return { ok: false, error: `bad name "${value}": letters, digits, . _ - only` };
+    flags.name = value;
+  } else if (flag === "--max") {
+    if (!/^[1-9]\d*$/.test(value)) return { ok: false, error: `bad --max "${value}": positive integer` };
+    flags.max = Number(value);
+  } else if (flag === "--until") {
+    const parsed = parseUntil(value, now);
+    if (!parsed.ok) return parsed;
+    flags.until = parsed.value;
+  } else {
+    return { ok: false, error: `unknown flag ${flag}. ${USAGE}` };
+  }
+  return { ok: true, value: undefined };
 }
 
 /** Split off the first whitespace-delimited token; returns [token, rest]. */
@@ -286,14 +343,75 @@ function nextToken(input: string): [string, string] {
   return [s.slice(0, end), s.slice(end)];
 }
 
-/** "5m" | "2h" | "1d" to milliseconds; undefined when unparsable or below 1m. */
-export function parseInterval(text: string): number | undefined {
-  const m = /^(\d+)([mhd])$/.exec(text);
-  if (!m) return undefined;
-  const n = Number(m[1]);
-  const unit = m[2] === "m" ? 60_000 : m[2] === "h" ? 3_600_000 : 86_400_000;
-  const ms = n * unit;
-  return ms >= MIN_INTERVAL_MS ? ms : undefined;
+interface IntervalCandidate {
+  text: string;
+  ms: number;
+  start: number;
+  end: number;
+  prefixed: boolean;
+}
+
+/** Every interval phrase in the text, in order, with its position. */
+function intervals(text: string): IntervalCandidate[] {
+  const found: IntervalCandidate[] = [];
+  for (const m of text.matchAll(PHRASE)) {
+    const start = m.index;
+    // A phrase starts at a word boundary: "every5m" and "x5m" are not phrases.
+    if (start > 0 && /\w/.test(text.charAt(start - 1))) continue;
+    const prefixed = m[1] !== undefined;
+    const body = prefixed ? m[0].replace(/^(?:every|each)\s+/i, "") : m[0];
+    const bare = UNIT_MS[body.toLowerCase()];
+    let ms = 0;
+    if (bare !== undefined) {
+      ms = bare;
+    } else {
+      for (const pair of body.matchAll(NUMBER_UNIT)) {
+        const unit = pair[0].replace(/^\d+\s*/, "").charAt(0).toLowerCase();
+        ms += Number(pair[1]) * (UNIT_MS[unit] ?? 0);
+      }
+    }
+    found.push({ text: m[0], ms, start, end: start + m[0].length, prefixed });
+  }
+  return found;
+}
+
+/**
+ * Pick the one interval phrase in the text and cut it out. At the head or the
+ * tail any form counts; in the middle only an every/each phrase does, so a
+ * duration inside the instruction is never eaten. Two phrases reject.
+ */
+function parseIntervalPhrase(input: string): Result<{ ms: number; rest: string }> {
+  const text = input.trim();
+  const tailEnd = text.replace(/[\s.,;:!]+$/, "").length;
+  const candidates = intervals(text).filter((c) => c.prefixed || c.start === 0 || c.end === tailEnd);
+  const [one, two] = candidates;
+  if (!one) return { ok: false, error: "no interval found: say 5m, every 2 hours, hourly, or daily" };
+  if (two) return { ok: false, error: `more than one interval: "${one.text}" and "${two.text}"; say one` };
+  if (one.ms < MIN_INTERVAL_MS) return { ok: false, error: `interval "${one.text}" is below the minimum 1m` };
+  return { ok: true, value: { ms: one.ms, rest: stripJoin(text.slice(0, one.start), text.slice(one.end)) } };
+}
+
+/**
+ * Join the text around a removed phrase. Punctuation that touched the phrase
+ * goes; a dangling and/then before it goes; an and/then after it stays, since
+ * it still joins what follows to what came before.
+ */
+function stripJoin(before: string, after: string): string {
+  const pre = before.replace(/[\s,;:.!]+$/, "").replace(/\s+(?:and|then)$/i, "");
+  const post = after.replace(/^[\s,;:.!]+/, "");
+  return pre === "" ? post : post === "" ? pre : `${pre} ${post}`;
+}
+
+/** Milliseconds to the shortest exact form: 5m, 2h, 1d, 1h30m. */
+export function formatInterval(ms: number): string {
+  const parts: string[] = [];
+  let left = ms;
+  for (const [unit, size] of [["d", 86_400_000], ["h", 3_600_000], ["m", 60_000]] as const) {
+    const n = Math.floor(left / size);
+    if (n > 0) parts.push(`${n}${unit}`);
+    left -= n * size;
+  }
+  return parts.join("") || "0m";
 }
 
 /** --until value: ISO datetime, or HH:mm meaning the next such local time. */
@@ -368,8 +486,9 @@ function isLoop(value: unknown): value is Loop {
   return (
     typeof v.name === "string" &&
     NAME_PATTERN.test(v.name) &&
-    typeof v.interval === "string" &&
-    parseInterval(v.interval) !== undefined &&
+    typeof v.intervalMs === "number" &&
+    Number.isInteger(v.intervalMs) &&
+    v.intervalMs >= MIN_INTERVAL_MS &&
     typeof prompt === "object" &&
     prompt !== null &&
     ((prompt.kind === "text" && typeof prompt.text === "string") ||
@@ -454,7 +573,7 @@ function formatLoop(loop: Loop, owner: number | undefined): string {
     loop.name,
     status,
     `next ${loop.paused ? "-" : formatLocal(loop.dueAt)}`,
-    `every ${loop.interval}`,
+    `every ${formatInterval(loop.intervalMs)}`,
     `fires ${loop.fires}`,
   ];
   if (loop.max !== undefined) parts.push(`max ${loop.max}`);
