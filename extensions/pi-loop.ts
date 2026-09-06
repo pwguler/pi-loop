@@ -215,7 +215,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   // The fire header is stored as the plain bracket line (AC-1). On screen it reads as a heading.
   pi.registerMarkdownTransformer((markdown, { messageType }) => {
     if (messageType !== "user") return markdown;
-    return markdown.replace(FIRE_HEADER, "### \u21bb $1 #$2 \u00b7 $3\n\n");
+    return markdown.replace(FIRE_HEADER, "### $1 #$2 \u00b7 $3\n\n");
   });
 
   pi.registerCommand("loop", {
@@ -660,10 +660,11 @@ interface Segment {
 const SEP: Segment = { text: "\u00b7", color: "dim" };
 
 /**
- * The footer status line as colored segments, or undefined to clear it.
- * Owner:     ↻ 2 active, 1 paused · next fast 10:05 | ↻ ... · due fast | ↯ ... · fired fast #6 [· 1 error]
- * Paused:    ‖ 1 paused
- * Non-owner: ⊘ 2 loops · owned by pid 4242
+ * The footer status line as colored segments, or undefined to clear it. The
+ * count carries the state color; there is no glyph.
+ * Owner:     2 active, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error]
+ * Paused:    1 paused
+ * Non-owner: 2 loops · owned by pid 4242
  */
 function statusLine(
   loops: Loop[],
@@ -674,11 +675,10 @@ function statusLine(
 ): Segment[] | undefined {
   if (loops.length === 0) {
     if (!pulse) return undefined;
-    return [{ text: "\u21af", color: "accent" }, { text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true }];
+    return [{ text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true }];
   }
   if (owner !== undefined) {
     return [
-      { text: "\u2298", color: "muted" },
       { text: `${loops.length} loop${loops.length === 1 ? "" : "s"}`, color: "muted" },
       SEP,
       { text: `owned by pid ${owner}`, color: "muted" },
@@ -693,18 +693,17 @@ function statusLine(
   const counts: string[] = [];
   if (active.length > 0) counts.push(`${active.length} active`);
   if (paused > 0) counts.push(`${paused} paused`);
+  const count = counts.join(", ");
 
   const out: Segment[] = [];
   if (pulse) {
-    out.push({ text: "\u21af", color: "accent" }, { text: counts.join(", "), color: "muted" }, SEP);
-    out.push({ text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true });
+    out.push({ text: count, color: "accent" }, SEP, { text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true });
   } else if (next === undefined) {
-    out.push({ text: "\u2016", color: errors > 0 ? "error" : "dim" }, { text: counts.join(", "), color: "muted" });
+    out.push({ text: count, color: "dim" });
   } else if (due) {
-    out.push({ text: "\u21bb", color: errors > 0 ? "error" : "warning" }, { text: counts.join(", "), color: "muted" }, SEP);
-    out.push({ text: `due ${next.name}`, color: "warning" });
+    out.push({ text: count, color: "warning" }, SEP, { text: `due ${next.name}`, color: "warning" });
   } else {
-    out.push({ text: "\u21bb", color: errors > 0 ? "error" : "success" }, { text: counts.join(", "), color: "muted" }, SEP);
+    out.push({ text: count, color: "success" }, SEP);
     out.push({ text: "next", color: "muted" }, { text: next.name, color: "accent" }, { text: formatLocal(next.dueAt).slice(11), color: "dim" });
   }
   if (errors > 0) out.push(SEP, { text: `${errors} error${errors === 1 ? "" : "s"}`, color: "error" });

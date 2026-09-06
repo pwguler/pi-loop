@@ -671,16 +671,16 @@ describe("AC-S1 footer reads counts and the next fire", () => {
     await s.command("pause idle");
     ws.clock.advance(5000);
     ws.tick();
-    expect(s.status()).toBe("↻ 2 active, 1 paused · next fast 10:05");
+    expect(s.status()).toBe("2 active, 1 paused · next fast 10:05");
 
     await s.command("resume idle");
     ws.tick();
-    expect(s.status()).toBe("↻ 3 active · next idle 10:01");
+    expect(s.status()).toBe("3 active · next idle 10:01");
 
     await s.command("stop idle");
     await s.command("pause fast");
     await s.command("pause slow");
-    expect(s.status()).toBe("‖ 2 paused");
+    expect(s.status()).toBe("2 paused");
   });
 });
 
@@ -691,17 +691,17 @@ describe("AC-S2 a fire pulses for five seconds", () => {
     ws.clock.advance(5000);
     ws.tick();
     await s.command("5m --name fast b");
-    expect(s.status()).toBe("↯ 2 active · fired fast #1");
+    expect(s.status()).toBe("2 active · fired fast #1");
     ws.clock.advance(4999);
     ws.tick();
-    expect(s.status()).toBe("↯ 2 active · fired fast #1");
+    expect(s.status()).toBe("2 active · fired fast #1");
     ws.clock.advance(1);
     ws.tick();
-    expect(s.status()).toBe("↻ 2 active · next fast 10:05");
+    expect(s.status()).toBe("2 active · next fast 10:05");
 
     ws.clock.advance(5 * MIN - 5000);
     ws.tick();
-    expect(s.status()).toBe("↯ 2 active · fired fast #2");
+    expect(s.status()).toBe("2 active · fired fast #2");
   });
 
   test("a second fire inside the five seconds replaces the pulse", async () => {
@@ -709,13 +709,13 @@ describe("AC-S2 a fire pulses for five seconds", () => {
     await s.command("5m --name a x");
     ws.clock.advance(2000);
     await s.command("5m --name b y");
-    expect(s.status()).toBe("↯ 2 active · fired b #1");
+    expect(s.status()).toBe("2 active · fired b #1");
     ws.clock.advance(3000);
     ws.tick();
-    expect(s.status()).toBe("↯ 2 active · fired b #1");
+    expect(s.status()).toBe("2 active · fired b #1");
     ws.clock.advance(2000);
     ws.tick();
-    expect(s.status()).toBe("↻ 2 active · next a 10:05");
+    expect(s.status()).toBe("2 active · next a 10:05");
   });
 });
 
@@ -725,16 +725,16 @@ describe("AC-S3 due while busy", () => {
     await s.command("5m ping");
     ws.clock.advance(5000);
     ws.tick();
-    expect(s.status()).toBe("↻ 1 active · next loop-1 10:05");
+    expect(s.status()).toBe("1 active · next loop-1 10:05");
     s.idle = false;
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()).toBe("↻ 1 active · due loop-1");
+    expect(s.status()).toBe("1 active · due loop-1");
     ws.clock.advance(60_000);
     ws.tick();
-    expect(s.status()).toBe("↻ 1 active · due loop-1");
+    expect(s.status()).toBe("1 active · due loop-1");
     s.settle();
-    expect(s.status()).toBe("↯ 1 active · fired loop-1 #2");
+    expect(s.status()).toBe("1 active · fired loop-1 #2");
   });
 });
 
@@ -746,9 +746,9 @@ describe("AC-S4 non-owner footer", () => {
     await a.command("pause p");
     const b = ws.startSession();
     ws.tick();
-    expect(b.status()).toBe(`⊘ 2 loops · owned by pid ${a.pid}`);
+    expect(b.status()).toBe(`2 loops · owned by pid ${a.pid}`);
     expect(b.statuses.map((x) => x.text).join(" ")).not.toMatch(/active/);
-    expect(a.status()).toBe("↯ 1 active, 1 paused · fired p #1");
+    expect(a.status()).toBe("1 active, 1 paused · fired p #1");
   });
 });
 
@@ -763,12 +763,12 @@ describe("AC-S5 error suffix", () => {
     fs.rmSync(ws.file("a.md"));
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()).toBe("↻ 3 active · next b 10:05 · 1 error");
+    expect(s.status()).toBe("3 active · next b 10:05 · 1 error");
     fs.rmSync(ws.file("b.md"));
     ws.tick();
     ws.clock.advance(5000);
     ws.tick();
-    expect(s.status()).toBe("↻ 3 active · next a 10:10 · 2 errors");
+    expect(s.status()).toBe("3 active · next a 10:10 · 2 errors");
   });
 });
 
@@ -777,16 +777,16 @@ describe("AC-S6 no loops clears the status", () => {
     const s = ws.startSession();
     expect(s.statuses).toHaveLength(0);
     await s.command("5m ping");
-    expect(s.status()).toBe("↯ 1 active · fired loop-1 #1");
+    expect(s.status()).toBe("1 active · fired loop-1 #1");
     await s.command("stop loop-1");
     expect(s.status()).toBeUndefined();
     expect(s.statuses[s.statuses.length - 1]).toEqual({ key: "pi-loop", text: undefined });
 
     await s.command("5m --max 1 once");
-    expect(s.status()).toBe("↯ fired loop-1 #1");
+    expect(s.status()).toBe("fired loop-1 #1");
     ws.clock.advance(4000);
     ws.tick();
-    expect(s.status()).toBe("↯ fired loop-1 #1");
+    expect(s.status()).toBe("fired loop-1 #1");
     ws.clock.advance(1000);
     ws.tick();
     expect(s.status()).toBeUndefined();
@@ -799,7 +799,7 @@ describe("AC-S6 no loops clears the status", () => {
     ws.tick();
     await s.command("5m --name b y");
     await s.command("stop a");
-    expect(s.status()).toBe("↯ 1 active · fired b #1");
+    expect(s.status()).toBe("1 active · fired b #1");
   });
 });
 
@@ -815,7 +815,7 @@ describe("AC-S7 setStatus only on change", () => {
       ws.tick();
     }
     expect(s.statuses.length).toBe(before);
-    expect(s.status()).toBe("↻ 1 active · next loop-1 10:05");
+    expect(s.status()).toBe("1 active · next loop-1 10:05");
   });
 });
 
@@ -835,16 +835,16 @@ describe("AC-S8 commands update the line in the same call", () => {
     await s.command("stop b");
     seen.push(s.status());
     expect(seen).toEqual([
-      "↯ 2 active · fired b #1",
-      "↯ 1 active, 1 paused · fired b #1",
-      "↯ 2 active · fired b #1",
-      "↻ 1 active · next a 12:00",
+      "2 active · fired b #1",
+      "1 active, 1 paused · fired b #1",
+      "2 active · fired b #1",
+      "1 active · next a 12:00",
     ]);
   });
 });
 
-describe("AC-S9 color roles from the theme", () => {
-  test("steady: success glyph, muted counts, dim separator and time, accent name", async () => {
+describe("AC-S9 color roles from the theme, no glyph", () => {
+  test("steady: success count, dim separator and time, muted next, accent name", async () => {
     const s = ws.startSession();
     await s.command("5m --name fast a");
     await s.command("1h --name p b");
@@ -852,42 +852,42 @@ describe("AC-S9 color roles from the theme", () => {
     ws.clock.advance(5000);
     ws.tick();
     expect(s.styled()).toBe(
-      "<success>↻</success> <muted>1 active, 1 paused</muted> <dim>·</dim> <muted>next</muted> <accent>fast</accent> <dim>10:05</dim>",
+      "<success>1 active, 1 paused</success> <dim>·</dim> <muted>next</muted> <accent>fast</accent> <dim>10:05</dim>",
     );
   });
 
-  test("due: warning glyph and warning clause", async () => {
+  test("due: warning count and warning clause", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     s.idle = false;
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.styled()).toBe("<warning>↻</warning> <muted>1 active</muted> <dim>·</dim> <warning>due loop-1</warning>");
+    expect(s.styled()).toBe("<warning>1 active</warning> <dim>·</dim> <warning>due loop-1</warning>");
   });
 
-  test("fired: accent glyph, bold accent clause", async () => {
+  test("fired: accent count, bold accent clause", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    expect(s.styled()).toBe("<accent>↯</accent> <muted>1 active</muted> <dim>·</dim> <b><accent>fired loop-1 #1</accent></b>");
+    expect(s.styled()).toBe("<accent>1 active</accent> <dim>·</dim> <b><accent>fired loop-1 #1</accent></b>");
   });
 
-  test("all paused: dim glyph, no clause", async () => {
+  test("all paused: dim count, no clause", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     ws.clock.advance(5000);
     await s.command("pause loop-1");
-    expect(s.styled()).toBe("<dim>‖</dim> <muted>1 paused</muted>");
+    expect(s.styled()).toBe("<dim>1 paused</dim>");
   });
 
-  test("non-owner: muted glyph and muted owner", async () => {
+  test("non-owner: muted count and muted owner", async () => {
     const a = ws.startSession();
     await a.command("5m ping");
     const b = ws.startSession();
     ws.tick();
-    expect(b.styled()).toBe(`<muted>⊘</muted> <muted>1 loop</muted> <dim>·</dim> <muted>owned by pid ${a.pid}</muted>`);
+    expect(b.styled()).toBe(`<muted>1 loop</muted> <dim>·</dim> <muted>owned by pid ${a.pid}</muted>`);
   });
 
-  test("error: error glyph and error suffix; a pulse keeps the accent glyph", async () => {
+  test("error: success count and error suffix; a pulse keeps the accent count", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("a.md"), "a");
     await s.command("5m --name a @a.md");
@@ -896,22 +896,22 @@ describe("AC-S9 color roles from the theme", () => {
     ws.clock.advance(5 * MIN);
     ws.tick();
     expect(s.styled()).toBe(
-      "<error>↻</error> <muted>2 active</muted> <dim>·</dim> <muted>next</muted> <accent>a</accent> <dim>10:10</dim> <dim>·</dim> <error>1 error</error>",
+      "<success>2 active</success> <dim>·</dim> <muted>next</muted> <accent>a</accent> <dim>10:10</dim> <dim>·</dim> <error>1 error</error>",
     );
     await s.command("1m --name c now");
     expect(s.styled()).toBe(
-      "<accent>↯</accent> <muted>3 active</muted> <dim>·</dim> <b><accent>fired c #1</accent></b> <dim>·</dim> <error>1 error</error>",
+      "<accent>3 active</accent> <dim>·</dim> <b><accent>fired c #1</accent></b> <dim>·</dim> <error>1 error</error>",
     );
   });
 });
 
 describe("AC-S10 the fire header displays as a heading", () => {
-  test("a fired message is stored plain and displayed as ### ↻ <name> #<n> · <time>, blank line, prompt", async () => {
+  test("a fired message is stored plain and displayed as ### <name> #<n> · <time>, blank line, prompt", async () => {
     const s = ws.startSession();
     await s.command("5m --name nightly check the build\nthen report");
     const stored = s.fires[0]?.text ?? "";
     expect(stored).toBe("[loop nightly #1 2026-09-06 10:00]\ncheck the build\nthen report");
-    expect(s.display(stored)).toBe("### ↻ nightly #1 · 2026-09-06 10:00\n\ncheck the build\nthen report");
+    expect(s.display(stored)).toBe("### nightly #1 · 2026-09-06 10:00\n\ncheck the build\nthen report");
   });
 
   test("assistant text, a plain user message, and a header past the first line are untouched", async () => {
