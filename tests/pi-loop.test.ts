@@ -159,7 +159,7 @@ describe("AC-2 next fire is due at lastFiredAt + interval and only when idle", (
 });
 
 describe("AC-7 list, stop, pause, resume", () => {
-  test("/loop list shows name, interval, next due, count, status; bare /loop prints the same", async () => {
+  test("/loop list shows name, interval, next due, count, status; bare /loop without a UI prints the same", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     await s.command("2h --name nightly --max 4 pong");
@@ -172,9 +172,10 @@ describe("AC-7 list, stop, pause, resume", () => {
         "nightly  active  next 2026-09-06 12:00  every 2h  fires 1  max 4",
       ].join("\n"),
     );
-    s.clearNotices();
-    await s.command("");
-    expect(s.lastNotice()).toBe(listed);
+    // Bare /loop opens the picker in a UI session (AC-P1); without a UI it prints the same text (AC-P6).
+    const plain = ws.startSession({ hasUI: false });
+    await plain.command("");
+    expect(plain.lastNotice()).toBe(listed.replace("active", `owned by pid ${s.pid}`).replace("active", `owned by pid ${s.pid}`));
   });
 
   test("/loop list with no loops says so", async () => {
@@ -922,5 +923,167 @@ describe("AC-S10 the fire header displays as a heading", () => {
     expect(s.display("ping")).toBe("ping");
     expect(s.display("note:\n" + header)).toBe("note:\n" + header);
     expect(s.display("[loop bad name #7 2026-09-07 02:48]\nping")).toBe("[loop bad name #7 2026-09-07 02:48]\nping");
+  });
+});
+
+// docs/specs/pi-loop-picker.md
+
+/** Script the picker: `list` answers the loops screen, `detail` answers a loop's screen. Each is consumed in order. */
+function script(s: import("./mock-pi.ts").Session, list: Array<string | undefined>, detail: Array<string | undefined> = []): void {
+  s.selectImpl = (title) => (title === "loops" ? list.shift() : detail.shift());
+}
+
+describe("AC-P1 bare /loop opens the picker", () => {
+  test("one row per loop: name, status, next, interval, fires", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name slow a");
+    await s.command("5m --name fast --max 4 b");
+    await s.command("1h --name idle c");
+    await s.command("pause idle");
+    script(s, [undefined]);
+    await s.command("");
+    expect(s.selects).toEqual([
+      {
+        title: "loops",
+        options: [
+          "slow        active   next 12:00  every 2h  #1",
+          "fast        active   next 10:05  every 5m  #1",
+          "idle        paused   next -      every 1h  #1",
+        ],
+      },
+    ]);
+  });
+
+  test("a non-owner sees owned by pid; no loops is one row that closes", async () => {
+    const a = ws.startSession();
+    await a.command("5m ping");
+    const b = ws.startSession();
+    script(b, [undefined]);
+    await b.command("");
+    expect(b.selects[0]?.options).toEqual([`loop-1      owned by pid ${a.pid}  next 10:05  every 5m  #1`]);
+
+    await a.command("stop loop-1");
+    script(a, ["no loops"]);
+    await a.command("");
+    expect(a.selects[0]?.options).toEqual(["no loops"]);
+    expect(a.selects).toHaveLength(1);
+  });
+});
+
+describe("AC-P2 Esc on the list closes and writes nothing", () => {
+  test("the state file is byte-identical after open and Esc", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const before = fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8");
+    s.clearNotices();
+    script(s, [undefined]);
+    await s.command("");
+    expect(fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8")).toBe(before);
+    expect(s.notices).toEqual([]);
+    expect(s.selects).toHaveLength(1);
+  });
+});
+
+describe("AC-P3 Enter on a row shows the loop's detail with actions", () => {
+  test("detail lists the fields; rows are pause, stop, back", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("p.md"), "x");
+    await s.command("2h --name nightly --max 10 --until 23:30 @p.md");
+    script(s, ["nightly     active   next 12:00  every 2h  #1", undefined], [undefined]);
+    await s.command("");
+    expect(s.selects[1]).toEqual({
+      title: [
+        "nightly",
+        "interval   2h",
+        "prompt     @p.md",
+        "next       2026-09-06 12:00",
+        "fires      1",
+        "status     active",
+        "max        10",
+        "until      2026-09-06 23:30",
+      ].join("\n"),
+      options: ["pause", "stop", "back"],
+    });
+  });
+
+  test("a paused loop offers resume; a loop with an error shows it", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("p.md"), "x");
+    await s.command("5m @p.md");
+    fs.rmSync(ws.file("p.md"));
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    await s.command("pause loop-1");
+    script(s, [`loop-1      paused   next -      every 5m  #1`, undefined], [undefined]);
+    await s.command("");
+    expect(s.selects[1]?.title.split("\n").slice(-1)[0]).toMatch(/^error      prompt file p\.md: .*ENOENT/);
+    expect(s.selects[1]?.title).toContain("status     paused");
+    expect(s.selects[1]?.options).toEqual(["resume", "stop", "back"]);
+  });
+});
+
+describe("AC-P4 pause and resume from the detail", () => {
+  test("apply at once, print the typed command's notice, return to the list with the new status", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    ws.clock.advance(5000);
+    ws.tick();
+    s.clearNotices();
+    script(s, ["loop-1      active   next 10:05  every 5m  #1", "loop-1      paused   next -      every 5m  #1", undefined], ["pause", "resume"]);
+    await s.command("");
+    expect(s.notices.map((n) => n.message)).toEqual(["paused loop-1", "resumed loop-1, next 2026-09-06 10:05"]);
+    expect(s.selects.map((x) => x.title === "loops" ? x.options[0] : x.options.join(","))).toEqual([
+      "loop-1      active   next 10:05  every 5m  #1",
+      "pause,stop,back",
+      "loop-1      paused   next -      every 5m  #1",
+      "resume,stop,back",
+      "loop-1      active   next 10:05  every 5m  #1",
+    ]);
+    expect(ws.loops()[0]?.paused).toBe(false);
+    expect(s.status()).toBe("1 active · next loop-1 10:05");
+  });
+});
+
+describe("AC-P5 stop asks first", () => {
+  test("no keeps the loop; yes removes it and returns to the list", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const row = "loop-1      active   next 10:05  every 5m  #1";
+    const answers = [false, true];
+    s.confirmImpl = () => answers.shift() ?? false;
+    script(s, [row, row, "no loops"], ["stop", "stop"]);
+    await s.command("");
+    expect(s.confirms).toEqual([
+      { title: "Stop loop-1?", message: "The loop is removed. Its fires so far stay in the transcript." },
+      { title: "Stop loop-1?", message: "The loop is removed. Its fires so far stay in the transcript." },
+    ]);
+    expect(s.selects.map((x) => x.options[0])).toEqual([row, "pause", row, "pause", "no loops"]);
+    expect(ws.loops()).toEqual([]);
+    expect(s.status()).toBeUndefined();
+  });
+});
+
+describe("AC-P6 back and Esc on the detail return to the list; no UI prints text", () => {
+  test("back and Esc both return; the list is shown again each time", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const row = "loop-1      active   next 10:05  every 5m  #1";
+    script(s, [row, row, undefined], ["back", undefined]);
+    await s.command("");
+    expect(s.selects.map((x) => x.title === "loops" ? "list" : "detail")).toEqual(["list", "detail", "list", "detail", "list"]);
+    expect(ws.loops()).toHaveLength(1);
+  });
+
+  test("bare /loop without a UI prints exactly /loop list", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    s.shutdown();
+    const p = ws.startSession({ hasUI: false });
+    await p.command("list");
+    const listed = p.lastNotice();
+    p.clearNotices();
+    await p.command("");
+    expect(p.lastNotice()).toBe(listed);
+    expect(p.selects).toEqual([]);
   });
 });

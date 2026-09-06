@@ -53,6 +53,8 @@ export interface LoopContext {
     notify(message: string, type?: "info" | "warning" | "error"): void;
     setStatus(key: string, text: string | undefined): void;
     theme: Pick<Theme, "fg" | "bold">;
+    select(title: string, options: string[]): Promise<string | undefined>;
+    confirm(title: string, message: string): Promise<boolean>;
   };
 }
 
@@ -243,9 +245,14 @@ export function run(pi: LoopHost, deps: Deps): void {
     const loops = loaded.value;
     const cmd = parsed.value;
 
-    if (cmd.kind === "list") {
+    if (cmd.kind === "list" || (cmd.kind === "picker" && !ctx.hasUI)) {
       const owner = otherOwner(ctx, deps);
       ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l, owner)).join("\n"), "info");
+      return;
+    }
+
+    if (cmd.kind === "picker") {
+      await picker(ctx);
       return;
     }
 
@@ -305,12 +312,42 @@ export function run(pi: LoopHost, deps: Deps): void {
       tick();
     }
   }
+
+  /**
+   * Bare /loop: pi's built-in picker. One row per loop; Enter opens the loop's
+   * detail with pause or resume, stop, back. Every action runs the typed command,
+   * so the state file, the notice, and the footer update the same way.
+   */
+  async function picker(ctx: LoopContext): Promise<void> {
+    for (;;) {
+      const loaded = loadLoops(ctx.cwd);
+      if (!loaded.ok) {
+        ctx.ui.notify(loaded.error, "error");
+        return;
+      }
+      const loops = loaded.value;
+      const owner = otherOwner(ctx, deps);
+      const rows = loops.map((l) => pickerRow(l, owner));
+      const picked = await ctx.ui.select("loops", rows.length === 0 ? ["no loops"] : rows);
+      const loop = picked === undefined ? undefined : loops[rows.indexOf(picked)];
+      if (!loop) return;
+
+      const action = await ctx.ui.select(detailTitle(loop, owner), [loop.paused ? "resume" : "pause", "stop", "back"]);
+      if (action === "pause" || action === "resume") {
+        await handle(`${action} ${loop.name}`, ctx);
+      } else if (action === "stop") {
+        const yes = await ctx.ui.confirm(`Stop ${loop.name}?`, "The loop is removed. Its fires so far stay in the transcript.");
+        if (yes) await handle(`stop ${loop.name}`, ctx);
+      }
+    }
+  }
 }
 
 // Command parsing
 
 type Command =
   | { kind: "list" }
+  | { kind: "picker" }
   | { kind: "stop" | "pause" | "resume"; name: string }
   | { kind: "create"; intervalMs: number; prompt: PromptSource; name?: string; max?: number; until?: number };
 
@@ -324,7 +361,8 @@ const USAGE = "usage: /loop [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prom
 
 function parseCommand(args: string, now: number): Result<Command> {
   const [head, rest] = nextToken(args);
-  if (head === "" || head === "list") return { ok: true, value: { kind: "list" } };
+  if (head === "") return { ok: true, value: { kind: "picker" } };
+  if (head === "list") return { ok: true, value: { kind: "list" } };
   if (head === "stop" || head === "pause" || head === "resume") {
     const [name, extra] = nextToken(rest);
     if (name === "" || extra.trim() !== "") return { ok: false, error: `usage: /loop ${head} <name>` };
@@ -721,12 +759,38 @@ function paint(segments: Segment[], theme: Pick<Theme, "fg" | "bold">): string {
     .join(" ");
 }
 
+/** One picker row: name, status, next, interval, fires. */
+function pickerRow(loop: Loop, owner: number | undefined): string {
+  const next = loop.paused ? "-" : formatLocal(loop.dueAt).slice(11);
+  return [loop.name.padEnd(10), loopStatus(loop, owner).padEnd(7), `next ${next.padEnd(5)}`, `every ${formatInterval(loop.intervalMs)}`, `#${loop.fires}`].join("  ");
+}
+
+/** The picker's detail screen: one field per line. */
+function detailTitle(loop: Loop, owner: number | undefined): string {
+  const field = (label: string, value: string) => `${label.padEnd(10)} ${value}`;
+  const lines = [
+    loop.name,
+    field("interval", formatInterval(loop.intervalMs)),
+    field("prompt", loop.prompt.kind === "text" ? loop.prompt.text : `@${loop.prompt.path}`),
+    field("next", loop.paused ? "-" : formatLocal(loop.dueAt)),
+    field("fires", String(loop.fires)),
+    field("status", loopStatus(loop, owner)),
+  ];
+  if (loop.max !== undefined) lines.push(field("max", String(loop.max)));
+  if (loop.until !== undefined) lines.push(field("until", formatLocal(loop.until)));
+  if (loop.lastError !== undefined) lines.push(field("error", loop.lastError));
+  return lines.join("\n");
+}
+
+function loopStatus(loop: Loop, owner: number | undefined): string {
+  return loop.paused ? "paused" : owner === undefined ? "active" : `owned by pid ${owner}`;
+}
+
 /** One /loop list line: name, status, next due, interval, count, bounds, last error. */
 function formatLoop(loop: Loop, owner: number | undefined): string {
-  const status = loop.paused ? "paused" : owner === undefined ? "active" : `owned by pid ${owner}`;
   const parts = [
     loop.name,
-    status,
+    loopStatus(loop, owner),
     `next ${loop.paused ? "-" : formatLocal(loop.dueAt)}`,
     `every ${formatInterval(loop.intervalMs)}`,
     `fires ${loop.fires}`,

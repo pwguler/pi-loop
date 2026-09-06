@@ -16,12 +16,15 @@ Local path install: the code on disk is the code that runs. `pi update --all` do
 ## Usage
 
 ```
+/loop                             picker: one row per loop; Enter opens the loop, Esc closes
 /loop [flags] <text with an interval phrase> [flags]
-/loop list          same as bare /loop
+/loop list                        plain text, one line per loop
 /loop stop <name>
 /loop pause <name>
 /loop resume <name>
 ```
+
+In the picker, Enter on a loop shows its detail (interval, prompt, next, fires, status, bounds, last error) with rows `pause` or `resume`, `stop`, `back`. `stop` asks first. Each action runs the typed command, so the state file, the notice, and the footer update the same way. Without a UI, bare `/loop` prints `/loop list`.
 
 The interval phrase is cut out of the text; what remains is the prompt.
 

@@ -125,6 +125,13 @@ export class Session implements LoopHost {
   readonly notices: Notice[] = [];
   /** Every setStatus call, in order; text undefined is a clear. */
   readonly statuses: Status[] = [];
+  /** Every ctx.ui.select call: title and rows. */
+  readonly selects: Array<{ title: string; options: string[] }> = [];
+  /** Every ctx.ui.confirm call. */
+  readonly confirms: Array<{ title: string; message: string }> = [];
+  /** Scripted answers: what the user picks in a select (undefined = Esc), and what they answer to confirm. */
+  selectImpl: (title: string, options: string[]) => string | undefined = () => undefined;
+  confirmImpl: (title: string, message: string) => boolean = () => false;
   readonly ctx: LoopContext;
   idle = true;
 
@@ -146,6 +153,14 @@ export class Session implements LoopHost {
         },
         setStatus(key: string, text: string | undefined) {
           self.statuses.push({ key, text });
+        },
+        async select(title: string, options: string[]) {
+          self.selects.push({ title, options });
+          return self.selectImpl(title, options);
+        },
+        async confirm(title: string, message: string) {
+          self.confirms.push({ title, message });
+          return self.confirmImpl(title, message);
         },
         // Tags instead of ANSI, so a test can see where each color lands.
         theme: {
