@@ -1,0 +1,4 @@
+node_modules/
+.pi-loop/
+.pi-glla/
+*.log
