@@ -1,7 +1,7 @@
 {
   "name": "pi-loop",
   "version": "0.1.0",
-  "description": "Recurring prompts inside a pi session. Each loop fires as one trailing user message on its interval, survives restarts, and adds nothing else to the conversation.",
+  "description": "A pi extension for loop.",
   "type": "module",
   "keywords": [
     "pi-package",

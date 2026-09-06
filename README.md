@@ -1,6 +1,6 @@
 # pi-loop
 
-Recurring prompts inside a pi session. Each loop fires its prompt on its interval as one trailing user message, keeps its count across restarts, and adds nothing else to the conversation: no context hook, no injected text, no cache marker. State is two JSON files in the workspace.
+A pi extension for loop.
 
 ## Install
 
