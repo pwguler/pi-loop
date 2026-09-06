@@ -246,3 +246,84 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
     expect(s.lastNotice()).toMatch(/error: prompt file prompt\.md is empty$/);
   });
 });
+
+describe("AC-4 state lives in <cwd>/.pi-loop/loops.json and survives a restart", () => {
+  test("a new session in the same cwd resumes every non-stopped loop with counter, prompt, interval, bounds", async () => {
+    const a = ws.startSession();
+    await a.command("5m --max 10 --until 23:30 ping");
+    await a.command("2h --name nightly @notes.md");
+    await a.command("1h --name idle pong");
+    await a.command("pause idle");
+    await a.command("1m --name gone bye");
+    await a.command("stop gone");
+    ws.clock.advance(MIN);
+    ws.tick();
+    a.shutdown();
+
+    expect(fs.existsSync(ws.file(".pi-loop/loops.json"))).toBe(true);
+    const b = ws.startSession();
+    await b.command("list");
+    expect(b.lastNotice()).toBe(
+      [
+        "loop-1  active  next 2026-09-06 10:05  every 5m  fires 1  max 10  until 2026-09-06 23:30",
+        "nightly  active  next 2026-09-06 12:00  every 2h  fires 0  error: prompt file notes.md: ENOENT: no such file or directory, open '" + ws.file("notes.md") + "'",
+        "idle  paused  next -  every 1h  fires 1",
+      ].join("\n"),
+    );
+    expect(ws.loops().map((l) => l.prompt)).toEqual([
+      { kind: "text", text: "ping" },
+      { kind: "file", path: "notes.md" },
+      { kind: "text", text: "pong" },
+    ]);
+
+    // The counter continues in b, not from zero.
+    ws.clock.advance(4 * MIN);
+    ws.tick();
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 10:05]\nping"]);
+  });
+});
+
+describe("AC-5 catch-up: a loop due on resume fires once, then continues on cadence from that fire", () => {
+  test("many missed fires collapse into one, at the first idle moment", async () => {
+    const a = ws.startSession();
+    await a.command("50m ping");
+    ws.clock.advance(10 * MIN);
+    a.kill();
+
+    // Back at 12:30: three fires were missed (10:50, 11:40, 12:30).
+    ws.clock.advance(140 * MIN);
+    const b = ws.startSession();
+    expect(b.fires).toHaveLength(0);
+    b.idle = false;
+    ws.tick();
+    expect(b.fires).toHaveLength(0);
+    b.settle();
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 12:30]\nping"]);
+    ws.tick();
+    expect(b.fires).toHaveLength(1);
+
+    // Next due is 13:20, counted from the catch-up fire.
+    await b.command("list");
+    expect(b.lastNotice()).toBe("loop-1  active  next 2026-09-06 13:20  every 50m  fires 2");
+    ws.clock.advance(49 * MIN);
+    ws.tick();
+    expect(b.fires).toHaveLength(1);
+    ws.clock.advance(MIN);
+    ws.tick();
+    expect(b.fires).toHaveLength(2);
+  });
+
+  test("a loop not yet due on resume waits for its due time", async () => {
+    const a = ws.startSession();
+    await a.command("50m ping");
+    ws.clock.advance(10 * MIN);
+    a.shutdown();
+    ws.clock.advance(10 * MIN);
+    const b = ws.startSession();
+    ws.tick();
+    expect(b.fires).toHaveLength(0);
+    ws.clock.advance(30 * MIN);
+    ws.tick();
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 10:50]\nping"]);
+  });
+});
