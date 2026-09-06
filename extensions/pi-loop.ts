@@ -215,7 +215,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   // The fire header is stored as the plain bracket line (AC-1). On screen it reads as a heading.
   pi.registerMarkdownTransformer((markdown, { messageType }) => {
     if (messageType !== "user") return markdown;
-    return markdown.replace(FIRE_HEADER, "### $1 #$2 \u00b7 $3\n\n");
+    return markdown.replace(FIRE_HEADER, "## $1 #$2 \u00b7 $3\n\n");
   });
 
   pi.registerCommand("loop", {

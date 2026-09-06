@@ -906,12 +906,12 @@ describe("AC-S9 color roles from the theme, no glyph", () => {
 });
 
 describe("AC-S10 the fire header displays as a heading", () => {
-  test("a fired message is stored plain and displayed as ### <name> #<n> · <time>, blank line, prompt", async () => {
+  test("a fired message is stored plain and displayed as ## <name> #<n> · <time>, blank line, prompt", async () => {
     const s = ws.startSession();
     await s.command("5m --name nightly check the build\nthen report");
     const stored = s.fires[0]?.text ?? "";
     expect(stored).toBe("[loop nightly #1 2026-09-06 10:00]\ncheck the build\nthen report");
-    expect(s.display(stored)).toBe("### nightly #1 · 2026-09-06 10:00\n\ncheck the build\nthen report");
+    expect(s.display(stored)).toBe("## nightly #1 · 2026-09-06 10:00\n\ncheck the build\nthen report");
   });
 
   test("assistant text, a plain user message, and a header past the first line are untouched", async () => {
