@@ -473,10 +473,34 @@ function loadLoops(cwd: string): Result<Loop[]> {
   } catch (e) {
     return { ok: false, error: `${file}: ${message(e)}` };
   }
-  if (!Array.isArray(data) || !data.every(isLoop)) {
-    return { ok: false, error: `${file}: unexpected shape, fix or delete it` };
+  if (!Array.isArray(data)) return { ok: false, error: `${file}: unexpected shape, fix or delete it` };
+  const loops: Loop[] = [];
+  for (const entry of data) {
+    const loop = normalizeLoop(entry);
+    if (!loop) return { ok: false, error: `${file}: unexpected shape, fix or delete it` };
+    loops.push(loop);
   }
-  return { ok: true, value: data };
+  return { ok: true, value: loops };
+}
+
+/**
+ * Validate one stored loop. The first schema stored the interval as a phrase
+ * (`interval: "2m"`); it is read here and written back as intervalMs on the
+ * next save.
+ */
+function normalizeLoop(value: unknown): Loop | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const intervalMs =
+    typeof v.intervalMs === "number"
+      ? v.intervalMs
+      : typeof v.interval === "string"
+        ? intervals(v.interval).find((c) => c.text === v.interval)?.ms
+        : undefined;
+  if (intervalMs === undefined || !Number.isInteger(intervalMs) || intervalMs < MIN_INTERVAL_MS) return undefined;
+  const { interval: _phrase, ...rest } = v;
+  const candidate: unknown = { ...rest, intervalMs };
+  return isLoop(candidate) ? candidate : undefined;
 }
 
 function isLoop(value: unknown): value is Loop {

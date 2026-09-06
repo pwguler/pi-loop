@@ -293,6 +293,22 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
 });
 
 describe("AC-4 state lives in <cwd>/.pi-loop/loops.json and survives a restart", () => {
+  test("a loops.json written with the first schema (interval: \"2m\") loads, fires, and is rewritten as intervalMs", async () => {
+    fs.mkdirSync(ws.file(".pi-loop"), { recursive: true });
+    fs.writeFileSync(
+      ws.file(".pi-loop/loops.json"),
+      JSON.stringify([{ name: "loop-1", interval: "2m", prompt: { kind: "text", text: "say hello" }, dueAt: T0, fires: 5, paused: false }]),
+    );
+    const s = ws.startSession();
+    await s.command("list");
+    expect(s.lastNotice()).toBe("loop-1  active  next 2026-09-06 10:00  every 2m  fires 5");
+    ws.tick();
+    expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #6 2026-09-06 10:00]\nsay hello"]);
+    expect(ws.loops()).toEqual([
+      { name: "loop-1", intervalMs: 2 * MIN, prompt: { kind: "text", text: "say hello" }, dueAt: T0 + 2 * MIN, fires: 6, paused: false },
+    ]);
+  });
+
   test("a new session in the same cwd resumes every non-stopped loop with counter, prompt, interval, bounds", async () => {
     const a = ws.startSession();
     await a.command("5m --max 10 --until 23:30 ping");
