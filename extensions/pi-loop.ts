@@ -81,6 +81,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     if (!loaded.ok) return loaded.error;
     const loops = loaded.value;
     if (loops.length === 0) return undefined;
+    if (!claimOwner(ctx, deps)) return undefined;
     if (!ctx.isIdle()) return undefined;
     const now = deps.now();
     const due = loops.find((l) => !l.paused && l.dueAt <= now);
@@ -122,9 +123,10 @@ export function run(pi: LoopHost, deps: Deps): void {
     tick();
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
     session?.stopTicker();
     session = undefined;
+    releaseOwner(ctx, deps);
   });
 
   pi.registerCommand("loop", {
@@ -145,7 +147,8 @@ export function run(pi: LoopHost, deps: Deps): void {
       const cmd = parsed.value;
 
       if (cmd.kind === "list") {
-        ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l)).join("\n"), "info");
+        const owner = otherOwner(ctx, deps);
+        ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l, owner)).join("\n"), "info");
         return;
       }
 
@@ -199,7 +202,8 @@ export function run(pi: LoopHost, deps: Deps): void {
         };
         loops.push(loop);
         saveLoops(ctx.cwd, loops);
-        ctx.ui.notify(`created ${name}, every ${cmd.interval}`, "info");
+        const owner = otherOwner(ctx, deps);
+        ctx.ui.notify(`created ${name}, every ${cmd.interval}${owner === undefined ? "" : `, owned by pid ${owner}`}`, "info");
         tick();
       }
     },
@@ -376,13 +380,65 @@ function writeAtomic(file: string, content: string): void {
   fs.renameSync(tmp, file);
 }
 
+// Owner: the one session in a cwd allowed to fire.
+
+interface Owner {
+  pid: number;
+  sessionId: string;
+  claimedAt: number;
+}
+
+function ownerFile(cwd: string): string {
+  return path.join(cwd, STATE_DIR, "owner.json");
+}
+
+/** The recorded owner; a missing or unreadable file is treated as unclaimed, since it is a lock, not user data. */
+function readOwner(cwd: string): Owner | undefined {
+  let data: unknown;
+  try {
+    data = JSON.parse(fs.readFileSync(ownerFile(cwd), "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (typeof data !== "object" || data === null) return undefined;
+  const v = data as Record<string, unknown>;
+  if (typeof v.pid !== "number" || typeof v.sessionId !== "string" || typeof v.claimedAt !== "number") return undefined;
+  return { pid: v.pid, sessionId: v.sessionId, claimedAt: v.claimedAt };
+}
+
+/** The pid of a live owner that is not this session, or undefined when this session may claim. */
+function otherOwner(ctx: LoopContext, deps: Deps): number | undefined {
+  const owner = readOwner(ctx.cwd);
+  if (!owner || owner.pid === deps.pid) return undefined;
+  return deps.isPidAlive(owner.pid) ? owner.pid : undefined;
+}
+
+/** Claim or keep ownership. Returns false when a live other session owns the cwd. */
+function claimOwner(ctx: LoopContext, deps: Deps): boolean {
+  if (otherOwner(ctx, deps) !== undefined) return false;
+  const owner = readOwner(ctx.cwd);
+  const sessionId = ctx.sessionManager.getSessionId();
+  if (owner && owner.pid === deps.pid && owner.sessionId === sessionId) return true;
+  const claim: Owner = { pid: deps.pid, sessionId, claimedAt: deps.now() };
+  writeAtomic(ownerFile(ctx.cwd), JSON.stringify(claim, null, 2) + "\n");
+  return true;
+}
+
+/** Remove owner.json if this session holds it. */
+function releaseOwner(ctx: LoopContext, deps: Deps): void {
+  const owner = readOwner(ctx.cwd);
+  if (!owner || owner.pid !== deps.pid || owner.sessionId !== ctx.sessionManager.getSessionId()) return;
+  fs.rmSync(ownerFile(ctx.cwd), { force: true });
+}
+
 // Helpers
 
 /** One /loop list line: name, status, next due, interval, count, bounds, last error. */
-function formatLoop(loop: Loop): string {
+function formatLoop(loop: Loop, owner: number | undefined): string {
+  const status = loop.paused ? "paused" : owner === undefined ? "active" : `owned by pid ${owner}`;
   const parts = [
     loop.name,
-    loop.paused ? "paused" : "active",
+    status,
     `next ${loop.paused ? "-" : formatLocal(loop.dueAt)}`,
     `every ${loop.interval}`,
     `fires ${loop.fires}`,

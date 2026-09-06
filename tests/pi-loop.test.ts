@@ -327,3 +327,72 @@ describe("AC-5 catch-up: a loop due on resume fires once, then continues on cade
     expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 10:50]\nping"]);
   });
 });
+
+describe("AC-6 one owner session per cwd", () => {
+  test("owner.json holds {pid, sessionId, claimedAt}; only the owner fires; the other shows owned by pid", async () => {
+    const a = ws.startSession();
+    await a.command("5m ping");
+    expect(ws.owner()).toEqual({ pid: a.pid, sessionId: a.sessionId, claimedAt: T0 });
+
+    const b = ws.startSession();
+    b.clearNotices();
+    await b.command("list");
+    expect(b.lastNotice()).toBe(`loop-1  owned by pid ${a.pid}  next 2026-09-06 10:05  every 5m  fires 1`);
+
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    b.settle();
+    expect(a.fires).toHaveLength(2);
+    expect(b.fires).toHaveLength(0);
+    expect(ws.owner()?.pid).toBe(a.pid);
+
+    // A loop created from the non-owner is fired by the owner, not the creator.
+    b.clearNotices();
+    await b.command("5m --name second pong");
+    expect(b.lastNotice()).toBe(`created second, every 5m, owned by pid ${a.pid}`);
+    expect(b.fires).toHaveLength(0);
+    ws.tick();
+    expect(a.fires.map((f) => f.text.split("\n")[0])).toEqual([
+      "[loop loop-1 #1 2026-09-06 10:00]",
+      "[loop loop-1 #2 2026-09-06 10:05]",
+      "[loop second #1 2026-09-06 10:05]",
+    ]);
+  });
+
+  test("a dead owner pid is taken over by the next session that starts", async () => {
+    const a = ws.startSession();
+    await a.command("5m ping");
+    a.kill();
+    expect(ws.owner()?.pid).toBe(a.pid);
+
+    const b = ws.startSession();
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 10:05]\nping"]);
+    expect(ws.owner()).toEqual({ pid: b.pid, sessionId: b.sessionId, claimedAt: T0 + 5 * MIN });
+  });
+
+  test("on owner shutdown the file is removed; a non-owner shutdown leaves it", async () => {
+    const a = ws.startSession();
+    await a.command("5m ping");
+    const b = ws.startSession();
+    ws.tick();
+    b.shutdown();
+    expect(ws.owner()?.pid).toBe(a.pid);
+    a.shutdown();
+    expect(ws.owner()).toBeUndefined();
+    expect(ws.loops()).toHaveLength(1);
+  });
+
+  test("a session with no UI never claims or fires", async () => {
+    const a = ws.startSession();
+    await a.command("5m ping");
+    a.shutdown();
+    const p = ws.startSession({ hasUI: false });
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    p.settle();
+    expect(p.fires).toHaveLength(0);
+    expect(ws.owner()).toBeUndefined();
+  });
+});
