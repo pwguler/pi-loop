@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/pi-loop.ts";
+import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/pi-loop/index.ts";
 
 export interface Fire {
   text: string;

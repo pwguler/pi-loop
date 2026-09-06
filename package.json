@@ -1,6 +1,6 @@
 {
   "name": "@pwguler/pi-loop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "A pi extension for loop.",
   "license": "MIT",
@@ -9,7 +9,7 @@
     "type": "git",
     "url": "git+https://github.com/pwguler/pi-loop.git"
   },
-  "main": "./extensions/pi-loop.ts",
+  "main": "./extensions/pi-loop/index.ts",
   "files": [
     "extensions",
     "README.md",
@@ -39,7 +39,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/pi-loop.ts"
+      "./extensions/pi-loop/index.ts"
     ]
   },
   "devDependencies": {
