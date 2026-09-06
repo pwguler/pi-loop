@@ -4,12 +4,31 @@ A pi extension for loop.
 
 ## Install
 
-```bash
-pi install ~/workspace/pi-loop
-pi list | grep pi-loop
+From npm:
+
+```sh
+pi install npm:@pwguler/pi-loop
 ```
 
-Local path install: the code on disk is the code that runs. `pi update --all` does not touch it.
+Or straight from GitHub (no npm account needed):
+
+```sh
+pi install git:github.com/pwguler/pi-loop
+```
+
+Pin a release so updates don't move under you:
+
+```sh
+pi install git:github.com/pwguler/pi-loop@v0.1.0
+```
+
+To update a git-installed package later, install the next tag the same way. Start or reload pi, then `/loop` is available. To try it without installing, use `pi -e git:github.com/pwguler/pi-loop`.
+
+For development, install the checkout by path; the code on disk is the code that runs and `pi update --all` does not touch it:
+
+```sh
+pi install ./pi-loop
+```
 
 ## Usage
 
@@ -89,9 +108,13 @@ Loop state is never read from the conversation. Compaction, `/tree`, and forks d
 
 ```bash
 bun test          # behavior against a mock pi host: firing, persistence, ownership, bounds, footer, picker
-bun run check     # tsc; also proves pi's ExtensionAPI satisfies the host surface used
+bun run typecheck # tsc; also proves pi's ExtensionAPI satisfies the host surface used
 grep -rnE 'cache_control|"ttl"|\bttl\s*[:=]|pi\.on\("context"|systemPrompt' extensions ; test $? -eq 1
 grep -rn 'sendUserMessage\|sendMessage' extensions | grep -v sendUserMessage ; test $? -eq 1
 ```
 
 The two greps hold the line the extension exists for: no cache markers, no TTL, no context hook, no system prompt change, and `sendUserMessage` as the only path that adds text to the conversation.
+
+## License
+
+MIT
