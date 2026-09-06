@@ -2,3 +2,5 @@ node_modules/
 .pi-loop/
 .pi-glla/
 *.log
+docs/specs/
+CONTEXT.md

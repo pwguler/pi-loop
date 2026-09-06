@@ -2,8 +2,6 @@
 
 A pi extension that re-sends one prompt on a fixed interval inside the current session. The timer lives in the extension, state lives on disk, and the only text it ever adds to the conversation is the fire itself: one trailing user message per fire, sent through `pi.sendUserMessage`. Nothing before the tail is touched.
 
-Vocabulary is in [CONTEXT.md](CONTEXT.md). Acceptance criteria are in [docs/specs/pi-loop.md](docs/specs/pi-loop.md).
-
 ## Install
 
 ```bash
@@ -65,7 +63,7 @@ While loops exist, one line in pi's footer:
 3 active · next b 10:05 · 1 error         some loop has a last error; /loop list has the message
 ```
 
-The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the error suffix `error`, separators and times `dim`. No loops, no line. The footer is written through `ctx.ui.setStatus` only, and only when the text changes. Spec: [docs/specs/pi-loop-status.md](docs/specs/pi-loop-status.md).
+The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the error suffix `error`, separators and times `dim`. No loops, no line. The footer is written through `ctx.ui.setStatus` only, and only when the text changes.
 
 Each fire is one user message:
 
