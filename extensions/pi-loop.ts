@@ -5,6 +5,7 @@
 // lives in <cwd>/.pi-loop/loops.json and owner.json, never in the session.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -49,6 +50,7 @@ export interface LoopContext {
   ui: {
     notify(message: string, type?: "info" | "warning" | "error"): void;
     setStatus(key: string, text: string | undefined): void;
+    theme: Pick<Theme, "fg" | "bold">;
   };
 }
 
@@ -175,10 +177,11 @@ export function run(pi: LoopHost, deps: Deps): void {
     if (!loaded.ok) return;
     const now = deps.now();
     if (session.pulse && session.pulse.until <= now) session.pulse = undefined;
-    const text = statusLine(loaded.value, otherOwner(session.ctx, deps), session.pulse, session.ctx.isIdle(), now);
+    const segments = statusLine(loaded.value, otherOwner(session.ctx, deps), session.pulse, session.ctx.isIdle(), now);
+    const text = segments?.map((s) => s.text).join(" ");
     if (text === session.status) return;
     session.status = text;
-    session.ctx.ui.setStatus(STATUS_KEY, text);
+    session.ctx.ui.setStatus(STATUS_KEY, segments && paint(segments, session.ctx.ui.theme));
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -631,10 +634,21 @@ function releaseOwner(ctx: LoopContext, deps: Deps): void {
 
 // Helpers
 
+type Color = Parameters<Theme["fg"]>[0];
+
+interface Segment {
+  text: string;
+  color: Color;
+  bold?: boolean;
+}
+
+const SEP: Segment = { text: "\u00b7", color: "dim" };
+
 /**
- * The footer status line, or undefined to clear it.
- * Owner:     loops 2 active, 1 paused, next fast 10:05 | due fast | fired fast #6 [, 1 error]
- * Non-owner: loops 2, owned by pid 4242
+ * The footer status line as colored segments, or undefined to clear it.
+ * Owner:     ↻ 2 active, 1 paused · next fast 10:05 | ↻ ... · due fast | ↯ ... · fired fast #6 [· 1 error]
+ * Paused:    ‖ 1 paused
+ * Non-owner: ⊘ 2 loops · owned by pid 4242
  */
 function statusLine(
   loops: Loop[],
@@ -642,21 +656,53 @@ function statusLine(
   pulse: { name: string; fires: number } | undefined,
   idle: boolean,
   now: number,
-): string | undefined {
-  if (loops.length === 0) return pulse ? `fired ${pulse.name} #${pulse.fires}` : undefined;
-  if (owner !== undefined) return `loops ${loops.length}, owned by pid ${owner}`;
+): Segment[] | undefined {
+  if (loops.length === 0) {
+    if (!pulse) return undefined;
+    return [{ text: "\u21af", color: "accent" }, { text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true }];
+  }
+  if (owner !== undefined) {
+    return [
+      { text: "\u2298", color: "muted" },
+      { text: `${loops.length} loop${loops.length === 1 ? "" : "s"}`, color: "muted" },
+      SEP,
+      { text: `owned by pid ${owner}`, color: "muted" },
+    ];
+  }
   const active = loops.filter((l) => !l.paused);
   const paused = loops.length - active.length;
-  const parts: string[] = [];
-  if (active.length > 0) parts.push(`${active.length} active`);
-  if (paused > 0) parts.push(`${paused} paused`);
-  const next = active.reduce<Loop | undefined>((a, l) => (a === undefined || l.dueAt < a.dueAt ? l : a), undefined);
-  if (pulse) parts.push(`fired ${pulse.name} #${pulse.fires}`);
-  else if (next && next.dueAt <= now && !idle) parts.push(`due ${next.name}`);
-  else if (next) parts.push(`next ${next.name} ${formatLocal(next.dueAt).slice(11)}`);
   const errors = loops.filter((l) => l.lastError !== undefined).length;
-  if (errors > 0) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
-  return `loops ${parts.join(", ")}`;
+  const next = active.reduce<Loop | undefined>((a, l) => (a === undefined || l.dueAt < a.dueAt ? l : a), undefined);
+  const due = next !== undefined && next.dueAt <= now && !idle;
+
+  const counts: string[] = [];
+  if (active.length > 0) counts.push(`${active.length} active`);
+  if (paused > 0) counts.push(`${paused} paused`);
+
+  const out: Segment[] = [];
+  if (pulse) {
+    out.push({ text: "\u21af", color: "accent" }, { text: counts.join(", "), color: "muted" }, SEP);
+    out.push({ text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true });
+  } else if (next === undefined) {
+    out.push({ text: "\u2016", color: errors > 0 ? "error" : "dim" }, { text: counts.join(", "), color: "muted" });
+  } else if (due) {
+    out.push({ text: "\u21bb", color: errors > 0 ? "error" : "warning" }, { text: counts.join(", "), color: "muted" }, SEP);
+    out.push({ text: `due ${next.name}`, color: "warning" });
+  } else {
+    out.push({ text: "\u21bb", color: errors > 0 ? "error" : "success" }, { text: counts.join(", "), color: "muted" }, SEP);
+    out.push({ text: "next", color: "muted" }, { text: next.name, color: "accent" }, { text: formatLocal(next.dueAt).slice(11), color: "dim" });
+  }
+  if (errors > 0) out.push(SEP, { text: `${errors} error${errors === 1 ? "" : "s"}`, color: "error" });
+  return out;
+}
+
+function paint(segments: Segment[], theme: Pick<Theme, "fg" | "bold">): string {
+  return segments
+    .map((s) => {
+      const colored = theme.fg(s.color, s.text);
+      return s.bold ? theme.bold(colored) : colored;
+    })
+    .join(" ");
 }
 
 /** One /loop list line: name, status, next due, interval, count, bounds, last error. */

@@ -48,14 +48,15 @@ The interval phrase is cut out of the text; what remains is the prompt.
 While loops exist, one line in pi's footer:
 
 ```
-loops 2 active, 1 paused, next fast 10:05     steady: counts and the earliest due active loop
-loops 2 active, due fast                      fast is overdue and the agent is busy; it fires on settle
-loops 2 active, fired fast #6                 for 5s after a fire, then back to next
-loops 2, owned by pid 4242                    this session is not the owner
-loops 1 active, next fast 10:05, 1 error      some loop has a last error; /loop list has the message
+↻ 1 active · next loop-1 02:42              steady: counts and the earliest due active loop
+↻ 2 active, 1 paused · due fast             fast is overdue and the agent is busy; it fires on settle
+↯ 2 active · fired fast #6                  for 5s after a fire, then back to next
+‖ 1 paused                                  everything paused
+⊘ 2 loops · owned by pid 4242              this session is not the owner
+↻ 3 active · next b 10:05 · 1 error         some loop has a last error; /loop list has the message
 ```
 
-No loops, no line. The footer is written through `ctx.ui.setStatus` only, and only when the text changes. Spec: [docs/specs/pi-loop-status.md](docs/specs/pi-loop-status.md).
+The glyph carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner, `error` when any loop has a last error. The loop name is `accent`; counts `muted`; separators and times `dim`. No loops, no line. The footer is written through `ctx.ui.setStatus` only, and only when the text changes. Spec: [docs/specs/pi-loop-status.md](docs/specs/pi-loop-status.md).
 
 Each fire is one user message:
 

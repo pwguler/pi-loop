@@ -146,6 +146,11 @@ export class Session implements LoopHost {
         setStatus(key: string, text: string | undefined) {
           self.statuses.push({ key, text });
         },
+        // Tags instead of ANSI, so a test can see where each color lands.
+        theme: {
+          fg: (color, text) => `<${color}>${text}</${color}>`,
+          bold: (text) => `<b>${text}</b>`,
+        },
       },
     };
     run(this, ws.deps(pid));
@@ -204,8 +209,13 @@ export class Session implements LoopHost {
     this.notices.length = 0;
   }
 
-  /** The footer text as of the last setStatus call; undefined when cleared or never set. */
+  /** The footer text as of the last setStatus call, color tags stripped; undefined when cleared or never set. */
   status(): string | undefined {
+    return this.styled()?.replace(/<\/?[a-zA-Z]+>/g, "");
+  }
+
+  /** The footer text as of the last setStatus call with the mock theme's color tags. */
+  styled(): string | undefined {
     return this.statuses[this.statuses.length - 1]?.text;
   }
 }
