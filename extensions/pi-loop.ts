@@ -108,6 +108,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     delete due.lastError;
     due.fires += 1;
     const done = due.max !== undefined && due.fires >= due.max;
+    // Save before send: a crash between the two loses one fire, never doubles it.
     saveLoops(ctx.cwd, done ? loops.filter((l) => l !== due) : loops);
     pi.sendUserMessage(`[loop ${due.name} #${due.fires} ${formatLocal(now)}]\n${prompt.value}`);
     if (done) ctx.ui.notify(`${due.name} reached max ${due.fires}, removed`, "info");
