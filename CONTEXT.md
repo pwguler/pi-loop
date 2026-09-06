@@ -40,12 +40,17 @@ _Avoid_: limit, budget, stop condition
 Either literal text stored with the loop or a file path re-read at every fire.
 _Avoid_: spec, template, message
 
+**Status line**:
+The one line in pi's footer that summarizes every loop in the workspace and, briefly, the last fire.
+_Avoid_: dashboard, widget, indicator
+
 ## Relationships
 
 - A **Loop** has exactly one **Prompt source**, one **Interval**, and at most two **Bounds**
 - A **Loop** performs zero or more **Fires**; the count of **Fires** is the loop's iteration number
 - A **Fire** happens only when the loop is **Due**, the session is idle, and the session is the **Owner**
 - A **Paused** loop is never **Due**; on resume its next **Due** is counted from the resume moment
+- The **Status line** summarizes every **Loop** and shows the most recent **Fire** for five seconds
 
 ## Example dialogue
 

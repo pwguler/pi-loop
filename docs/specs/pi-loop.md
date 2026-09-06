@@ -8,7 +8,7 @@ A pi extension that re-sends a prompt on a fixed interval inside the current ses
 - No active-hours window, no timezone logic. A loop fires on its interval around the clock; any rest logic belongs in the prompt.
 - No modification of the system prompt, no `context` hook, no message injected anywhere but the tail, no `cache_control` markers, no TTL settings. Anything before the last message is left byte-identical.
 - No external scheduler. No cron, no systemd, no spawned `pi -p`. The timer lives in the extension.
-- No ledger, no metrics file, no dashboard. The session transcript is the record.
+- No ledger, no metrics file, no dashboard. The session transcript is the record. A one-line footer status is not a dashboard; it is specified in `pi-loop-status.md`.
 - No npm publish. Installed from the local directory.
 - No `pi -p` support. Interactive sessions only.
 
