@@ -543,3 +543,37 @@ describe("AC-9 bounds", () => {
     expect(s.lastNotice()).toBe("loop-1 reached until 2026-09-06 10:07, removed");
   });
 });
+
+describe("AC-12 loop state is never read from conversation history", () => {
+  test("compaction between two fires changes nothing: counter, due, prompt", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const before = ws.loops();
+
+    // Compaction rewrites the transcript; the extension has no handler for it and reads no entries.
+    ws.clock.advance(2 * MIN);
+    s.emit("session_before_compact");
+    s.emit("session_compact");
+    ws.tick();
+    expect(ws.loops()).toEqual(before);
+
+    ws.clock.advance(3 * MIN);
+    ws.tick();
+    expect(s.fires.map((f) => f.text)).toEqual([
+      "[loop loop-1 #1 2026-09-06 10:00]\nping",
+      "[loop loop-1 #2 2026-09-06 10:05]\nping",
+    ]);
+  });
+
+  test("the extension subscribes only to session_start, session_shutdown, agent_settled", () => {
+    const s = ws.startSession();
+    expect([...s.handlers.keys()].sort()).toEqual(["agent_settled", "session_shutdown", "session_start"]);
+  });
+
+  test("any sessionManager member other than getSessionId throws in this harness", () => {
+    const s = ws.startSession();
+    const sm: { getSessionId(): string; getEntries?: () => unknown } = s.ctx.sessionManager;
+    expect(sm.getSessionId()).toBe(s.sessionId);
+    expect(() => sm.getEntries).toThrow(/never come from conversation history/);
+  });
+});
