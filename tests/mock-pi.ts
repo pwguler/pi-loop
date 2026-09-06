@@ -21,6 +21,11 @@ export interface Notice {
   type: string | undefined;
 }
 
+export interface Status {
+  key: string;
+  text: string | undefined;
+}
+
 export interface OwnerFile {
   pid: number;
   sessionId: string;
@@ -117,6 +122,8 @@ export class Session implements LoopHost {
   readonly commands = new Map<string, (args: string, ctx: LoopContext) => Promise<void>>();
   readonly fires: Fire[] = [];
   readonly notices: Notice[] = [];
+  /** Every setStatus call, in order; text undefined is a clear. */
+  readonly statuses: Status[] = [];
   readonly ctx: LoopContext;
   idle = true;
 
@@ -135,6 +142,9 @@ export class Session implements LoopHost {
       ui: {
         notify(message: string, type?: "info" | "warning" | "error") {
           self.notices.push({ message, type });
+        },
+        setStatus(key: string, text: string | undefined) {
+          self.statuses.push({ key, text });
         },
       },
     };
@@ -192,6 +202,11 @@ export class Session implements LoopHost {
 
   clearNotices(): void {
     this.notices.length = 0;
+  }
+
+  /** The footer text as of the last setStatus call; undefined when cleared or never set. */
+  status(): string | undefined {
+    return this.statuses[this.statuses.length - 1]?.text;
   }
 }
 

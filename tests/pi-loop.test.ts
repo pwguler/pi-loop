@@ -659,3 +659,186 @@ describe("AC-12 loop state is never read from conversation history", () => {
     expect(() => sm.getEntries).toThrow(/never come from conversation history/);
   });
 });
+
+// docs/specs/pi-loop-status.md
+
+describe("AC-S1 footer reads counts and the next fire", () => {
+  test("loops <a> active, <p> paused, next <earliest active> <HH:mm>; zero counts are omitted", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name slow a");
+    await s.command("5m --name fast b");
+    await s.command("1m --name idle c");
+    await s.command("pause idle");
+    ws.clock.advance(5000);
+    ws.tick();
+    expect(s.status()).toBe("loops 2 active, 1 paused, next fast 10:05");
+
+    await s.command("resume idle");
+    ws.tick();
+    expect(s.status()).toBe("loops 3 active, next idle 10:01");
+
+    await s.command("stop idle");
+    await s.command("pause fast");
+    await s.command("pause slow");
+    expect(s.status()).toBe("loops 2 paused");
+  });
+});
+
+describe("AC-S2 a fire pulses for five seconds", () => {
+  test("fired <name> #<fires> replaces next, counts stay, then next returns", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name slow a");
+    ws.clock.advance(5000);
+    ws.tick();
+    await s.command("5m --name fast b");
+    expect(s.status()).toBe("loops 2 active, fired fast #1");
+    ws.clock.advance(4999);
+    ws.tick();
+    expect(s.status()).toBe("loops 2 active, fired fast #1");
+    ws.clock.advance(1);
+    ws.tick();
+    expect(s.status()).toBe("loops 2 active, next fast 10:05");
+
+    ws.clock.advance(5 * MIN - 5000);
+    ws.tick();
+    expect(s.status()).toBe("loops 2 active, fired fast #2");
+  });
+
+  test("a second fire inside the five seconds replaces the pulse", async () => {
+    const s = ws.startSession();
+    await s.command("5m --name a x");
+    ws.clock.advance(2000);
+    await s.command("5m --name b y");
+    expect(s.status()).toBe("loops 2 active, fired b #1");
+    ws.clock.advance(3000);
+    ws.tick();
+    expect(s.status()).toBe("loops 2 active, fired b #1");
+    ws.clock.advance(2000);
+    ws.tick();
+    expect(s.status()).toBe("loops 2 active, next a 10:05");
+  });
+});
+
+describe("AC-S3 due while busy", () => {
+  test("an overdue active loop with the agent busy reads due <name>, then fires on settle", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    ws.clock.advance(5000);
+    ws.tick();
+    expect(s.status()).toBe("loops 1 active, next loop-1 10:05");
+    s.idle = false;
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.status()).toBe("loops 1 active, due loop-1");
+    ws.clock.advance(60_000);
+    ws.tick();
+    expect(s.status()).toBe("loops 1 active, due loop-1");
+    s.settle();
+    expect(s.status()).toBe("loops 1 active, fired loop-1 #2");
+  });
+});
+
+describe("AC-S4 non-owner footer", () => {
+  test("reads loops <n>, owned by pid <pid> and never says active", async () => {
+    const a = ws.startSession();
+    await a.command("5m ping");
+    await a.command("5m --name p pong");
+    await a.command("pause p");
+    const b = ws.startSession();
+    ws.tick();
+    expect(b.status()).toBe(`loops 2, owned by pid ${a.pid}`);
+    expect(b.statuses.map((x) => x.text).join(" ")).not.toMatch(/active/);
+    expect(a.status()).toBe("loops 1 active, 1 paused, fired p #1");
+  });
+});
+
+describe("AC-S5 error suffix", () => {
+  test("a loop with a last error adds , 1 error; two add , 2 errors", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("a.md"), "a");
+    fs.writeFileSync(ws.file("b.md"), "b");
+    await s.command("5m --name a @a.md");
+    await s.command("5m --name b @b.md");
+    await s.command("2h --name c text");
+    fs.rmSync(ws.file("a.md"));
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.status()).toBe("loops 3 active, next b 10:05, 1 error");
+    fs.rmSync(ws.file("b.md"));
+    ws.tick();
+    ws.clock.advance(5000);
+    ws.tick();
+    expect(s.status()).toBe("loops 3 active, next a 10:10, 2 errors");
+  });
+});
+
+describe("AC-S6 no loops clears the status", () => {
+  test("stop of the last loop clears and drops its pulse; a --max fire pulses then clears", async () => {
+    const s = ws.startSession();
+    expect(s.statuses).toHaveLength(0);
+    await s.command("5m ping");
+    expect(s.status()).toBe("loops 1 active, fired loop-1 #1");
+    await s.command("stop loop-1");
+    expect(s.status()).toBeUndefined();
+    expect(s.statuses[s.statuses.length - 1]).toEqual({ key: "pi-loop", text: undefined });
+
+    await s.command("5m --max 1 once");
+    expect(s.status()).toBe("fired loop-1 #1");
+    ws.clock.advance(4000);
+    ws.tick();
+    expect(s.status()).toBe("fired loop-1 #1");
+    ws.clock.advance(1000);
+    ws.tick();
+    expect(s.status()).toBeUndefined();
+  });
+
+  test("stop of a loop other than the one pulsing keeps the pulse", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name a x");
+    ws.clock.advance(5000);
+    ws.tick();
+    await s.command("5m --name b y");
+    await s.command("stop a");
+    expect(s.status()).toBe("loops 1 active, fired b #1");
+  });
+});
+
+describe("AC-S7 setStatus only on change", () => {
+  test("ten idle ticks with nothing changing make no call", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    ws.clock.advance(5000);
+    ws.tick();
+    const before = s.statuses.length;
+    for (let i = 0; i < 10; i++) {
+      ws.clock.advance(1000);
+      ws.tick();
+    }
+    expect(s.statuses.length).toBe(before);
+    expect(s.status()).toBe("loops 1 active, next loop-1 10:05");
+  });
+});
+
+describe("AC-S8 commands update the line in the same call", () => {
+  test("create, pause, resume, stop each render without a tick", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name a x");
+    ws.clock.advance(5000);
+    ws.tick();
+    const seen: Array<string | undefined> = [];
+    await s.command("5m --name b y");
+    seen.push(s.status());
+    await s.command("pause b");
+    seen.push(s.status());
+    await s.command("resume b");
+    seen.push(s.status());
+    await s.command("stop b");
+    seen.push(s.status());
+    expect(seen).toEqual([
+      "loops 2 active, fired b #1",
+      "loops 1 active, 1 paused, fired b #1",
+      "loops 2 active, fired b #1",
+      "loops 1 active, next a 12:00",
+    ]);
+  });
+});

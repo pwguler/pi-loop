@@ -11,6 +11,9 @@ import * as path from "node:path";
 const STATE_DIR = ".pi-loop";
 const MIN_INTERVAL_MS = 60_000;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const STATUS_KEY = "pi-loop";
+/** How long the footer says `fired <name> #<n>` after a fire. */
+const PULSE_MS = 5000;
 
 // Interval grammar. A phrase is an optional every/each, then either a bare
 // unit word (hourly, hour, day, ...) or one or more <n><unit> pairs (5m, 5 min,
@@ -43,7 +46,10 @@ export interface LoopContext {
   hasUI: boolean;
   sessionManager: { getSessionId(): string };
   isIdle(): boolean;
-  ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
+  ui: {
+    notify(message: string, type?: "info" | "warning" | "error"): void;
+    setStatus(key: string, text: string | undefined): void;
+  };
 }
 
 export type LoopHandler = (event: unknown, ctx: LoopContext) => void;
@@ -86,25 +92,38 @@ export interface Loop {
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
+/** What one fireDue did: nothing, a state-file error, or a fire. */
+type FireOutcome = { fired?: { name: string; fires: number }; error?: string };
+
+interface Session {
+  ctx: LoopContext;
+  stopTicker: () => void;
+  /** Last state-file error shown, so it is shown once until it changes. */
+  reported?: string;
+  /** The status line as last rendered, so setStatus is called only on change. */
+  status?: string;
+  /** The last fire, shown in the status line until `until`. */
+  pulse?: { name: string; fires: number; until: number };
+}
+
 export default function piLoop(pi: ExtensionAPI): void {
   run(pi, realDeps());
 }
 
 export function run(pi: LoopHost, deps: Deps): void {
   /** The started session, if any. Set on session_start, cleared on session_shutdown. */
-  let session: { ctx: LoopContext; stopTicker: () => void; reported?: string } | undefined;
+  let session: Session | undefined;
 
   /**
-   * Fire the first due loop if the session is idle. Returns an error message
-   * when the state file is unreadable; a fire that skips records its error on
-   * the loop instead.
+   * Fire the first due loop if the session is idle. A state-file error is
+   * returned; a fire that skips records its error on the loop instead.
    */
-  function fireDue(ctx: LoopContext): string | undefined {
+  function fireDue(ctx: LoopContext): FireOutcome {
     const loaded = loadLoops(ctx.cwd);
-    if (!loaded.ok) return loaded.error;
+    if (!loaded.ok) return { error: loaded.error };
     let loops = loaded.value;
-    if (loops.length === 0) return undefined;
-    if (!claimOwner(ctx, deps)) return undefined;
+    if (loops.length === 0) return {};
+    if (!claimOwner(ctx, deps)) return {};
     const now = deps.now();
 
     // A loop past its --until is removed before any fire, even one due now.
@@ -117,15 +136,15 @@ export function run(pi: LoopHost, deps: Deps): void {
       }
     }
 
-    if (!ctx.isIdle()) return undefined;
+    if (!ctx.isIdle()) return {};
     const due = loops.find((l) => !l.paused && l.dueAt <= now);
-    if (!due) return undefined;
+    if (!due) return {};
     due.dueAt = now + due.intervalMs;
     const prompt = readPrompt(ctx.cwd, due.prompt);
     if (!prompt.ok) {
       due.lastError = prompt.error;
       saveLoops(ctx.cwd, loops);
-      return undefined;
+      return {};
     }
     delete due.lastError;
     due.fires += 1;
@@ -134,17 +153,32 @@ export function run(pi: LoopHost, deps: Deps): void {
     saveLoops(ctx.cwd, done ? loops.filter((l) => l !== due) : loops);
     pi.sendUserMessage(`[loop ${due.name} #${due.fires} ${formatLocal(now)}]\n${prompt.value}`);
     if (done) ctx.ui.notify(`${due.name} reached max ${due.fires}, removed`, "info");
-    return undefined;
+    return { fired: { name: due.name, fires: due.fires } };
   }
 
-  /** One tick: fire what is due, and notify a state-file error once until it changes. */
+  /** One tick: fire what is due, notify a state-file error once until it changes, redraw the status line. */
   function tick(): void {
     if (!session) return;
-    const error = fireDue(session.ctx);
-    if (error !== session.reported) {
-      session.reported = error;
-      if (error) session.ctx.ui.notify(error, "error");
+    const outcome = fireDue(session.ctx);
+    if (outcome.error !== session.reported) {
+      session.reported = outcome.error;
+      if (outcome.error) session.ctx.ui.notify(outcome.error, "error");
     }
+    if (outcome.fired) session.pulse = { ...outcome.fired, until: deps.now() + PULSE_MS };
+    render();
+  }
+
+  /** Redraw the footer status line; setStatus is called only when the text changes. */
+  function render(): void {
+    if (!session) return;
+    const loaded = loadLoops(session.ctx.cwd);
+    if (!loaded.ok) return;
+    const now = deps.now();
+    if (session.pulse && session.pulse.until <= now) session.pulse = undefined;
+    const text = statusLine(loaded.value, otherOwner(session.ctx, deps), session.pulse, session.ctx.isIdle(), now);
+    if (text === session.status) return;
+    session.status = text;
+    session.ctx.ui.setStatus(STATUS_KEY, text);
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -153,6 +187,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     // Interactive sessions only. A -p run has no UI and must not fire loops.
     if (!ctx.hasUI) return;
     session = { ctx, stopTicker: deps.ticker(() => safely(tick)) };
+    render();
   });
 
   pi.on("agent_settled", () => {
@@ -168,82 +203,88 @@ export function run(pi: LoopHost, deps: Deps): void {
   pi.registerCommand("loop", {
     description: "Fire a prompt on an interval: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>; /loop list | stop | pause | resume <name>",
     handler: async (args, ctx) => {
-      const now = deps.now();
-      const parsed = parseCommand(args, now);
-      if (!parsed.ok) {
-        ctx.ui.notify(parsed.error, "error");
-        return;
-      }
-      const loaded = loadLoops(ctx.cwd);
-      if (!loaded.ok) {
-        ctx.ui.notify(loaded.error, "error");
-        return;
-      }
-      const loops = loaded.value;
-      const cmd = parsed.value;
-
-      if (cmd.kind === "list") {
-        const owner = otherOwner(ctx, deps);
-        ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l, owner)).join("\n"), "info");
-        return;
-      }
-
-      if (cmd.kind === "stop" || cmd.kind === "pause" || cmd.kind === "resume") {
-        const loop = loops.find((l) => l.name === cmd.name);
-        if (!loop) {
-          ctx.ui.notify(`no loop named ${cmd.name}`, "error");
-          return;
-        }
-        if (cmd.kind === "stop") {
-          saveLoops(ctx.cwd, loops.filter((l) => l !== loop));
-          ctx.ui.notify(`stopped ${loop.name}`, "info");
-          return;
-        }
-        if (cmd.kind === "pause") {
-          if (loop.paused) {
-            ctx.ui.notify(`${loop.name} is already paused`, "error");
-            return;
-          }
-          loop.paused = true;
-          saveLoops(ctx.cwd, loops);
-          ctx.ui.notify(`paused ${loop.name}`, "info");
-          return;
-        }
-        if (!loop.paused) {
-          ctx.ui.notify(`${loop.name} is not paused`, "error");
-          return;
-        }
-        loop.paused = false;
-        loop.dueAt = now + loop.intervalMs;
-        saveLoops(ctx.cwd, loops);
-        ctx.ui.notify(`resumed ${loop.name}, next ${formatLocal(loop.dueAt)}`, "info");
-        return;
-      }
-
-      if (cmd.kind === "create") {
-        const name = cmd.name ?? defaultName(loops);
-        if (loops.some((l) => l.name === name)) {
-          ctx.ui.notify(`loop ${name} already exists`, "error");
-          return;
-        }
-        const loop: Loop = {
-          name,
-          intervalMs: cmd.intervalMs,
-          prompt: cmd.prompt,
-          dueAt: now,
-          fires: 0,
-          paused: false,
-          max: cmd.max,
-          until: cmd.until,
-        };
-        loops.push(loop);
-        saveLoops(ctx.cwd, loops);
-        const owner = otherOwner(ctx, deps);
-        ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}`, "info");
-        tick();
-      }
+      await handle(args, ctx);
+      render();
     },
   });
+
+  async function handle(args: string, ctx: LoopContext): Promise<void> {
+    const now = deps.now();
+    const parsed = parseCommand(args, now);
+    if (!parsed.ok) {
+      ctx.ui.notify(parsed.error, "error");
+      return;
+    }
+    const loaded = loadLoops(ctx.cwd);
+    if (!loaded.ok) {
+      ctx.ui.notify(loaded.error, "error");
+      return;
+    }
+    const loops = loaded.value;
+    const cmd = parsed.value;
+
+    if (cmd.kind === "list") {
+      const owner = otherOwner(ctx, deps);
+      ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l, owner)).join("\n"), "info");
+      return;
+    }
+
+    if (cmd.kind === "stop" || cmd.kind === "pause" || cmd.kind === "resume") {
+      const loop = loops.find((l) => l.name === cmd.name);
+      if (!loop) {
+        ctx.ui.notify(`no loop named ${cmd.name}`, "error");
+        return;
+      }
+      if (cmd.kind === "stop") {
+        saveLoops(ctx.cwd, loops.filter((l) => l !== loop));
+        if (session?.pulse?.name === loop.name) session.pulse = undefined;
+        ctx.ui.notify(`stopped ${loop.name}`, "info");
+        return;
+      }
+      if (cmd.kind === "pause") {
+        if (loop.paused) {
+          ctx.ui.notify(`${loop.name} is already paused`, "error");
+          return;
+        }
+        loop.paused = true;
+        saveLoops(ctx.cwd, loops);
+        ctx.ui.notify(`paused ${loop.name}`, "info");
+        return;
+      }
+      if (!loop.paused) {
+        ctx.ui.notify(`${loop.name} is not paused`, "error");
+        return;
+      }
+      loop.paused = false;
+      loop.dueAt = now + loop.intervalMs;
+      saveLoops(ctx.cwd, loops);
+      ctx.ui.notify(`resumed ${loop.name}, next ${formatLocal(loop.dueAt)}`, "info");
+      return;
+    }
+
+    if (cmd.kind === "create") {
+      const name = cmd.name ?? defaultName(loops);
+      if (loops.some((l) => l.name === name)) {
+        ctx.ui.notify(`loop ${name} already exists`, "error");
+        return;
+      }
+      const loop: Loop = {
+        name,
+        intervalMs: cmd.intervalMs,
+        prompt: cmd.prompt,
+        dueAt: now,
+        fires: 0,
+        paused: false,
+        max: cmd.max,
+        until: cmd.until,
+      };
+      loops.push(loop);
+      saveLoops(ctx.cwd, loops);
+      const owner = otherOwner(ctx, deps);
+      ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}`, "info");
+      tick();
+    }
+  }
 }
 
 // Command parsing
@@ -589,6 +630,34 @@ function releaseOwner(ctx: LoopContext, deps: Deps): void {
 }
 
 // Helpers
+
+/**
+ * The footer status line, or undefined to clear it.
+ * Owner:     loops 2 active, 1 paused, next fast 10:05 | due fast | fired fast #6 [, 1 error]
+ * Non-owner: loops 2, owned by pid 4242
+ */
+function statusLine(
+  loops: Loop[],
+  owner: number | undefined,
+  pulse: { name: string; fires: number } | undefined,
+  idle: boolean,
+  now: number,
+): string | undefined {
+  if (loops.length === 0) return pulse ? `fired ${pulse.name} #${pulse.fires}` : undefined;
+  if (owner !== undefined) return `loops ${loops.length}, owned by pid ${owner}`;
+  const active = loops.filter((l) => !l.paused);
+  const paused = loops.length - active.length;
+  const parts: string[] = [];
+  if (active.length > 0) parts.push(`${active.length} active`);
+  if (paused > 0) parts.push(`${paused} paused`);
+  const next = active.reduce<Loop | undefined>((a, l) => (a === undefined || l.dueAt < a.dueAt ? l : a), undefined);
+  if (pulse) parts.push(`fired ${pulse.name} #${pulse.fires}`);
+  else if (next && next.dueAt <= now && !idle) parts.push(`due ${next.name}`);
+  else if (next) parts.push(`next ${next.name} ${formatLocal(next.dueAt).slice(11)}`);
+  const errors = loops.filter((l) => l.lastError !== undefined).length;
+  if (errors > 0) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
+  return `loops ${parts.join(", ")}`;
+}
 
 /** One /loop list line: name, status, next due, interval, count, bounds, last error. */
 function formatLoop(loop: Loop, owner: number | undefined): string {

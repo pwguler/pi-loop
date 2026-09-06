@@ -16,7 +16,7 @@ One line in pi's footer that says how many loops exist, which fires next, and fo
 - AC-S3: When an active loop is due and the session is not idle, the clause reads `due <name>` with no time.
 - AC-S4: A non-owner session reads `loops <n>, owned by pid <pid>`. The word `active` never appears there.
 - AC-S5: When any loop has a last error the line ends with `, <n> error` or `, <n> errors`.
-- AC-S6: With no loops the status is cleared (`setStatus(key, undefined)`). If the fired loop reached `--max` on that fire, the pulse still shows for five seconds, then the status clears.
+- AC-S6: With no loops the status is cleared (`setStatus(key, undefined)`). `/loop stop` of the loop whose pulse is showing drops the pulse. If the fired loop reached `--max` on that fire, the pulse still shows for five seconds, then the status clears.
 - AC-S7: `setStatus` is called only when the rendered string changes. Ten idle ticks with nothing changing produce no call.
 - AC-S8: `/loop` create, stop, pause, resume update the line in the same command, without waiting for a tick.
 

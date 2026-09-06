@@ -43,6 +43,20 @@ The interval phrase is cut out of the text; what remains is the prompt.
 - `--max n` removes the loop after its n-th fire. `--until` removes it at that time; `HH:mm` means the next such local time.
 - Pause keeps the counter. Resume counts the next due from the resume moment.
 
+## Status line
+
+While loops exist, one line in pi's footer:
+
+```
+loops 2 active, 1 paused, next fast 10:05     steady: counts and the earliest due active loop
+loops 2 active, due fast                      fast is overdue and the agent is busy; it fires on settle
+loops 2 active, fired fast #6                 for 5s after a fire, then back to next
+loops 2, owned by pid 4242                    this session is not the owner
+loops 1 active, next fast 10:05, 1 error      some loop has a last error; /loop list has the message
+```
+
+No loops, no line. The footer is written through `ctx.ui.setStatus` only, and only when the text changes. Spec: [docs/specs/pi-loop-status.md](docs/specs/pi-loop-status.md).
+
 Each fire is one user message:
 
 ```
