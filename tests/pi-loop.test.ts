@@ -3,6 +3,7 @@
 // those are not covered here.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import * as fs from "node:fs";
 import { Workspace } from "./mock-pi.ts";
 
 // A fixed instant in local time so header and list output are asserted
@@ -195,5 +196,53 @@ describe("AC-7 list, stop, pause, resume", () => {
     await s.command("pause loop-1");
     expect(s.notices[0]?.type).toBe("error");
     expect(s.lastNotice()).toBe("loop-1 is already paused");
+  });
+});
+
+describe("AC-3 @file prompt source is re-read at every fire", () => {
+  test("editing the file between fires changes the next fire's text", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("prompt.md"), "first version\n");
+    await s.command("5m @prompt.md");
+    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:00]\nfirst version");
+    expect(ws.loops()[0]?.prompt).toEqual({ kind: "file", path: "prompt.md" });
+
+    fs.writeFileSync(ws.file("prompt.md"), "second version\nwith two lines\n");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:05]\nsecond version\nwith two lines");
+  });
+
+  test("a missing file at fire time skips that fire, records the error in list, keeps the loop alive", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("prompt.md"), "v1");
+    await s.command("5m @prompt.md");
+    fs.rmSync(ws.file("prompt.md"));
+
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(1);
+    s.clearNotices();
+    await s.command("list");
+    expect(s.lastNotice()).toMatch(/^loop-1  active  next 2026-09-06 10:10  every 5m  fires 1  error: prompt file prompt\.md: .*ENOENT/);
+
+    // The loop is alive: the file comes back and the next fire is #2 with no error shown.
+    fs.writeFileSync(ws.file("prompt.md"), "v2");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(2);
+    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:10]\nv2");
+    s.clearNotices();
+    await s.command("list");
+    expect(s.lastNotice()).toBe("loop-1  active  next 2026-09-06 10:15  every 5m  fires 1".replace("fires 1", "fires 2"));
+  });
+
+  test("an empty file at fire time is a skip with its own error", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("prompt.md"), "   \n");
+    await s.command("5m @prompt.md");
+    expect(s.fires).toHaveLength(0);
+    await s.command("list");
+    expect(s.lastNotice()).toMatch(/error: prompt file prompt\.md is empty$/);
   });
 });
