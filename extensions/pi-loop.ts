@@ -44,6 +44,13 @@ const UNIT_MS: Record<string, number> = {
 // The narrow slice of pi's API this extension uses. The default export is
 // typed against ExtensionAPI, so tsc checks that pi still satisfies it.
 
+/** What a ctx.ui.custom factory returns: pi's Component, narrowed to what the panel implements. */
+export interface Panel {
+  render(width: number): string[];
+  handleInput?(data: string): void;
+  invalidate(): void;
+}
+
 export interface LoopContext {
   cwd: string;
   hasUI: boolean;
@@ -55,6 +62,14 @@ export interface LoopContext {
     theme: Pick<Theme, "fg" | "bold">;
     select(title: string, options: string[]): Promise<string | undefined>;
     confirm(title: string, message: string): Promise<boolean>;
+    custom<T>(
+      factory: (
+        tui: { requestRender(): void },
+        theme: Pick<Theme, "fg" | "bold">,
+        keybindings: { matches(data: string, id: "tui.select.cancel"): boolean },
+        done: (result: T) => void,
+      ) => Panel,
+    ): Promise<T>;
   };
 }
 
@@ -314,10 +329,10 @@ export function run(pi: LoopHost, deps: Deps): void {
   }
 
   /**
-   * /loop and /loop list in a UI session: pi's built-in picker. One row per
-   * loop; Enter opens the loop's detail with pause or resume, stop, back. Every
-   * action runs the typed command, so the state file, the notice, and the
-   * footer update the same way.
+   * /loop and /loop list in a UI session: pi's built-in picker for the list;
+   * Enter opens the loop's detail panel, where p pauses or resumes, x stops,
+   * escape or ctrl+c goes back. Every action runs the typed command, so the
+   * state file, the notice, and the footer update the same way.
    */
   async function picker(ctx: LoopContext): Promise<void> {
     for (;;) {
@@ -333,7 +348,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       const loop = picked === undefined ? undefined : loops[rows.indexOf(picked)];
       if (!loop) return;
 
-      const action = await ctx.ui.select(detailTitle(loop, owner), [loop.paused ? "resume" : "pause", "stop", "back"]);
+      const action = await ctx.ui.custom<PanelAction>((_tui, theme, keybindings, done) => detailPanel(loop, owner, theme, keybindings, done));
       if (action === "pause" || action === "resume") {
         await handle(`${action} ${loop.name}`, ctx);
       } else if (action === "stop") {
@@ -342,6 +357,56 @@ export function run(pi: LoopHost, deps: Deps): void {
       }
     }
   }
+}
+
+type PanelAction = "pause" | "resume" | "stop" | "back";
+
+/**
+ * The loop's detail panel, drawn like pi's selector: border, blank, title,
+ * blank, body, blank, hint line, blank, border. Single keys act.
+ */
+function detailPanel(
+  loop: Loop,
+  owner: number | undefined,
+  theme: Pick<Theme, "fg" | "bold">,
+  keybindings: { matches(data: string, id: "tui.select.cancel"): boolean },
+  done: (action: PanelAction) => void,
+): Panel {
+  const toggle = loop.paused ? "resume" : "pause";
+  const field = (label: string, value: string) => ` ${theme.fg("muted", label.padEnd(10))} ${value}`;
+  const hint = (key: string, text: string) => theme.fg("dim", key) + theme.fg("muted", ` ${text}`);
+  const body = [
+    field("interval", formatInterval(loop.intervalMs)),
+    field("prompt", loop.prompt.kind === "text" ? loop.prompt.text : `@${loop.prompt.path}`),
+    field("next", loop.paused ? "-" : formatLocal(loop.dueAt)),
+    field("fires", String(loop.fires)),
+    field("status", loopStatus(loop, owner)),
+  ];
+  if (loop.max !== undefined) body.push(field("max", String(loop.max)));
+  if (loop.until !== undefined) body.push(field("until", formatLocal(loop.until)));
+  if (loop.lastError !== undefined) body.push(field("error", loop.lastError));
+  return {
+    render(width) {
+      const border = theme.fg("border", "\u2500".repeat(Math.max(1, width)));
+      return [
+        border,
+        "",
+        ` ${theme.fg("accent", theme.bold(loop.name))}`,
+        "",
+        ...body,
+        "",
+        ` ${hint("p", toggle)}  ${hint("x", "stop")}  ${hint("escape/ctrl+c", "back")}`,
+        "",
+        border,
+      ];
+    },
+    handleInput(data) {
+      if (data === "p") done(toggle);
+      else if (data === "x") done("stop");
+      else if (keybindings.matches(data, "tui.select.cancel")) done("back");
+    },
+    invalidate() {},
+  };
 }
 
 // Command parsing
@@ -762,23 +827,6 @@ function paint(segments: Segment[], theme: Pick<Theme, "fg" | "bold">): string {
 function pickerRow(loop: Loop, owner: number | undefined): string {
   const next = loop.paused ? "-" : formatLocal(loop.dueAt).slice(11);
   return [loop.name.padEnd(10), loopStatus(loop, owner).padEnd(7), `next ${next.padEnd(5)}`, `every ${formatInterval(loop.intervalMs)}`, `#${loop.fires}`].join("  ");
-}
-
-/** The picker's detail screen: one field per line. */
-function detailTitle(loop: Loop, owner: number | undefined): string {
-  const field = (label: string, value: string) => `${label.padEnd(10)} ${value}`;
-  const lines = [
-    loop.name,
-    field("interval", formatInterval(loop.intervalMs)),
-    field("prompt", loop.prompt.kind === "text" ? loop.prompt.text : `@${loop.prompt.path}`),
-    field("next", loop.paused ? "-" : formatLocal(loop.dueAt)),
-    field("fires", String(loop.fires)),
-    field("status", loopStatus(loop, owner)),
-  ];
-  if (loop.max !== undefined) lines.push(field("max", String(loop.max)));
-  if (loop.until !== undefined) lines.push(field("until", formatLocal(loop.until)));
-  if (loop.lastError !== undefined) lines.push(field("error", loop.lastError));
-  return lines.join("\n");
 }
 
 function loopStatus(loop: Loop, owner: number | undefined): string {

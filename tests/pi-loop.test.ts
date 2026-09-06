@@ -933,9 +933,19 @@ describe("AC-S10 the fire header displays as a heading", () => {
 
 // docs/specs/pi-loop-picker.md
 
-/** Script the picker: `list` answers the loops screen, `detail` answers a loop's screen. Each is consumed in order. */
-function script(s: import("./mock-pi.ts").Session, list: Array<string | undefined>, detail: Array<string | undefined> = []): void {
-  s.selectImpl = (title) => (title === "loops" ? list.shift() : detail.shift());
+/** Script the list screen: each entry is what the user picks, in order; undefined is Esc. */
+function script(s: Session, list: Array<string | undefined>): void {
+  s.selectImpl = (title) => (title === "loops" ? list.shift() : undefined);
+}
+
+/** Script the detail panel: each time it opens, record its plain lines and press the next key. */
+function panel(s: Session, keys: string[]): string[][] {
+  const seen: string[][] = [];
+  s.customImpl = (p) => {
+    seen.push(p.render(60).map((l) => l.replace(/<\/?[a-zA-Z]+>/g, "").trimEnd()));
+    p.handleInput?.(keys.shift() ?? "\x1b");
+  };
+  return seen;
 }
 
 describe("AC-P1 bare /loop opens the picker", () => {
@@ -989,29 +999,36 @@ describe("AC-P2 Esc on the list closes and writes nothing", () => {
   });
 });
 
-describe("AC-P3 Enter on a row shows the loop's detail with actions", () => {
-  test("detail lists the fields; rows are pause, stop, back", async () => {
+describe("AC-P3 Enter on a row opens the loop's detail panel", () => {
+  test("border, name, fields, hint line with p x escape/ctrl+c, border", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("p.md"), "x");
     await s.command("2h --name nightly --max 10 --until 23:30 @p.md");
-    script(s, ["nightly     active   next 12:00  every 2h  #1", undefined], [undefined]);
+    script(s, ["nightly     active   next 12:00  every 2h  #1", undefined]);
+    const seen = panel(s, ["\x1b"]);
     await s.command("");
-    expect(s.selects[1]).toEqual({
-      title: [
-        "nightly",
-        "interval   2h",
-        "prompt     @p.md",
-        "next       2026-09-06 12:00",
-        "fires      1",
-        "status     active",
-        "max        10",
-        "until      2026-09-06 23:30",
-      ].join("\n"),
-      options: ["pause", "stop", "back"],
-    });
+    expect(seen).toEqual([
+      [
+        "─".repeat(60),
+        "",
+        " nightly",
+        "",
+        " interval   2h",
+        " prompt     @p.md",
+        " next       2026-09-06 12:00",
+        " fires      1",
+        " status     active",
+        " max        10",
+        " until      2026-09-06 23:30",
+        "",
+        " p pause  x stop  escape/ctrl+c back",
+        "",
+        "─".repeat(60),
+      ],
+    ]);
   });
 
-  test("a paused loop offers resume; a loop with an error shows it", async () => {
+  test("hint keys are dim and descriptions muted, like pi's own; a paused loop says p resume; an error shows", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("p.md"), "x");
     await s.command("5m @p.md");
@@ -1019,63 +1036,82 @@ describe("AC-P3 Enter on a row shows the loop's detail with actions", () => {
     ws.clock.advance(5 * MIN);
     ws.tick();
     await s.command("pause loop-1");
-    script(s, [`loop-1      paused   next -      every 5m  #1`, undefined], [undefined]);
+    script(s, ["loop-1      paused   next -      every 5m  #1", undefined]);
+    let styled: string[] = [];
+    s.customImpl = (p) => {
+      styled = p.render(60);
+      p.handleInput?.("\x03");
+    };
     await s.command("");
-    expect(s.selects[1]?.title.split("\n").slice(-1)[0]).toMatch(/^error      prompt file p\.md: .*ENOENT/);
-    expect(s.selects[1]?.title).toContain("status     paused");
-    expect(s.selects[1]?.options).toEqual(["resume", "stop", "back"]);
+    const hint = styled.find((l) => l.includes("resume"));
+    expect(hint).toBe(" <dim>p</dim><muted> resume</muted>  <dim>x</dim><muted> stop</muted>  <dim>escape/ctrl+c</dim><muted> back</muted>");
+    expect(styled[0]).toBe(`<border>${"─".repeat(60)}</border>`);
+    expect(styled[2]).toBe(" <accent><b>loop-1</b></accent>");
+    expect(styled.find((l) => l.includes("status"))).toBe(" <muted>status    </muted> paused");
+    expect(styled.find((l) => l.includes("error"))).toMatch(/^ <muted>error     <\/muted> prompt file p\.md: .*ENOENT/);
   });
 });
 
-describe("AC-P4 pause and resume from the detail", () => {
-  test("apply at once, print the typed command's notice, return to the list with the new status", async () => {
+describe("AC-P4 p pauses or resumes from the panel", () => {
+  test("applies at once, prints the typed command's notice, returns to the list with the new status", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     ws.clock.advance(5000);
     ws.tick();
     s.clearNotices();
-    script(s, ["loop-1      active   next 10:05  every 5m  #1", "loop-1      paused   next -      every 5m  #1", undefined], ["pause", "resume"]);
+    script(s, ["loop-1      active   next 10:05  every 5m  #1", "loop-1      paused   next -      every 5m  #1", undefined]);
+    const seen = panel(s, ["p", "p"]);
     await s.command("");
     expect(s.notices.map((n) => n.message)).toEqual(["paused loop-1", "resumed loop-1, next 2026-09-06 10:05"]);
-    expect(s.selects.map((x) => x.title === "loops" ? x.options[0] : x.options.join(","))).toEqual([
+    expect(s.selects.map((x) => x.options[0])).toEqual([
       "loop-1      active   next 10:05  every 5m  #1",
-      "pause,stop,back",
       "loop-1      paused   next -      every 5m  #1",
-      "resume,stop,back",
       "loop-1      active   next 10:05  every 5m  #1",
     ]);
+    expect(seen.map((lines) => lines.find((l) => l.startsWith(" p ")))).toEqual([" p pause  x stop  escape/ctrl+c back", " p resume  x stop  escape/ctrl+c back"]);
     expect(ws.loops()[0]?.paused).toBe(false);
     expect(s.status()).toBe("1 active · next loop-1 10:05");
   });
 });
 
-describe("AC-P5 stop asks first", () => {
+describe("AC-P5 x asks first", () => {
   test("no keeps the loop; yes removes it and returns to the list", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     const row = "loop-1      active   next 10:05  every 5m  #1";
     const answers = [false, true];
     s.confirmImpl = () => answers.shift() ?? false;
-    script(s, [row, row, "no loops"], ["stop", "stop"]);
+    script(s, [row, row, "no loops"]);
+    panel(s, ["x", "x"]);
     await s.command("");
     expect(s.confirms).toEqual([
       { title: "Stop loop-1?", message: "The loop is removed. Its fires so far stay in the transcript." },
       { title: "Stop loop-1?", message: "The loop is removed. Its fires so far stay in the transcript." },
     ]);
-    expect(s.selects.map((x) => x.options[0])).toEqual([row, "pause", row, "pause", "no loops"]);
+    expect(s.selects.map((x) => x.options[0])).toEqual([row, row, "no loops"]);
     expect(ws.loops()).toEqual([]);
     expect(s.status()).toBeUndefined();
   });
 });
 
-describe("AC-P6 back and Esc on the detail return to the list; no UI prints text", () => {
-  test("back and Esc both return; the list is shown again each time", async () => {
+describe("AC-P6 escape and ctrl+c on the panel return to the list; other keys are ignored; no UI prints text", () => {
+  test("escape, ctrl+c, and a stray key", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     const row = "loop-1      active   next 10:05  every 5m  #1";
-    script(s, [row, row, undefined], ["back", undefined]);
+    script(s, [row, row, undefined]);
+    let opened = 0;
+    s.customImpl = (p) => {
+      opened++;
+      p.handleInput?.("q");
+      p.handleInput?.("\n");
+      expect(ws.loops()).toHaveLength(1);
+      p.handleInput?.(opened === 1 ? "\x1b" : "\x03");
+    };
     await s.command("");
-    expect(s.selects.map((x) => x.title === "loops" ? "list" : "detail")).toEqual(["list", "detail", "list", "detail", "list"]);
+    expect(opened).toBe(2);
+    expect(s.selects.map((x) => x.title)).toEqual(["loops", "loops", "loops"]);
+    expect(s.confirms).toEqual([]);
     expect(ws.loops()).toHaveLength(1);
   });
 

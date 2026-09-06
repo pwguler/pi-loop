@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform } from "../extensions/pi-loop.ts";
+import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/pi-loop.ts";
 
 export interface Fire {
   text: string;
@@ -132,6 +132,8 @@ export class Session implements LoopHost {
   /** Scripted answers: what the user picks in a select (undefined = Esc), and what they answer to confirm. */
   selectImpl: (title: string, options: string[]) => string | undefined = () => undefined;
   confirmImpl: (title: string, message: string) => boolean = () => false;
+  /** Drives a ctx.ui.custom panel: read its lines, press keys. Default presses Esc. */
+  customImpl: (panel: Panel) => void = (panel) => panel.handleInput?.("\x1b");
   readonly ctx: LoopContext;
   idle = true;
   hasUI: boolean;
@@ -144,6 +146,11 @@ export class Session implements LoopHost {
   ) {
     const self = this;
     this.hasUI = hasUI;
+    // Tags instead of ANSI, so a test can see where each color lands.
+    const theme = {
+      fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+      bold: (text: string) => `<b>${text}</b>`,
+    };
     this.ctx = {
       cwd: ws.cwd,
       get hasUI() {
@@ -166,10 +173,17 @@ export class Session implements LoopHost {
           self.confirms.push({ title, message });
           return self.confirmImpl(title, message);
         },
-        // Tags instead of ANSI, so a test can see where each color lands.
-        theme: {
-          fg: (color, text) => `<${color}>${text}</${color}>`,
-          bold: (text) => `<b>${text}</b>`,
+        theme,
+        custom<T>(factory: (tui: { requestRender(): void }, theme: LoopContext["ui"]["theme"], keybindings: { matches(data: string, id: "tui.select.cancel"): boolean }, done: (result: T) => void) => Panel): Promise<T> {
+          return new Promise<T>((resolve) => {
+            const panel = factory(
+              { requestRender() {} },
+              theme,
+              { matches: (data, id) => id === "tui.select.cancel" && (data === "\x1b" || data === "\x03") },
+              resolve,
+            );
+            self.customImpl(panel);
+          });
         },
       },
     };
