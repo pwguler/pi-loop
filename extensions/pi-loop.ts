@@ -79,11 +79,22 @@ export function run(pi: LoopHost, deps: Deps): void {
   function fireDue(ctx: LoopContext): string | undefined {
     const loaded = loadLoops(ctx.cwd);
     if (!loaded.ok) return loaded.error;
-    const loops = loaded.value;
+    let loops = loaded.value;
     if (loops.length === 0) return undefined;
     if (!claimOwner(ctx, deps)) return undefined;
-    if (!ctx.isIdle()) return undefined;
     const now = deps.now();
+
+    // A loop past its --until is removed before any fire, even one due now.
+    const expired = loops.filter((l) => l.until !== undefined && l.until <= now);
+    if (expired.length > 0) {
+      loops = loops.filter((l) => !expired.includes(l));
+      saveLoops(ctx.cwd, loops);
+      for (const l of expired) {
+        if (l.until !== undefined) ctx.ui.notify(`${l.name} reached until ${formatLocal(l.until)}, removed`, "info");
+      }
+    }
+
+    if (!ctx.isIdle()) return undefined;
     const due = loops.find((l) => !l.paused && l.dueAt <= now);
     if (!due) return undefined;
     const intervalMs = parseInterval(due.interval) ?? MIN_INTERVAL_MS;
@@ -96,8 +107,10 @@ export function run(pi: LoopHost, deps: Deps): void {
     }
     delete due.lastError;
     due.fires += 1;
-    saveLoops(ctx.cwd, loops);
+    const done = due.max !== undefined && due.fires >= due.max;
+    saveLoops(ctx.cwd, done ? loops.filter((l) => l !== due) : loops);
     pi.sendUserMessage(`[loop ${due.name} #${due.fires} ${formatLocal(now)}]\n${prompt.value}`);
+    if (done) ctx.ui.notify(`${due.name} reached max ${due.fires}, removed`, "info");
     return undefined;
   }
 

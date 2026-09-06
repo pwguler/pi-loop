@@ -440,3 +440,106 @@ describe("AC-8 names", () => {
     expect(ws.loops()).toHaveLength(0);
   });
 });
+
+describe("AC-9 bounds", () => {
+  test("--max n removes the loop after its n-th fire and prints one line", async () => {
+    const s = ws.startSession();
+    await s.command("5m --max 3 ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(ws.loops()).toHaveLength(1);
+    s.clearNotices();
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual([
+      "[loop loop-1 #1 2026-09-06 10:00]",
+      "[loop loop-1 #2 2026-09-06 10:05]",
+      "[loop loop-1 #3 2026-09-06 10:10]",
+    ]);
+    expect(ws.loops()).toHaveLength(0);
+    expect(s.notices).toEqual([{ message: "loop-1 reached max 3, removed", type: "info" }]);
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(3);
+  });
+
+  test("--max 1 is a one-shot", async () => {
+    const s = ws.startSession();
+    await s.command("5m --max 1 once");
+    expect(s.fires).toHaveLength(1);
+    expect(ws.loops()).toHaveLength(0);
+    expect(s.lastNotice()).toBe("loop-1 reached max 1, removed");
+  });
+
+  test("--until HH:mm removes the loop at that time without firing it, and prints one line", async () => {
+    const s = ws.startSession();
+    await s.command("5m --until 10:12 ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(3);
+    s.clearNotices();
+    ws.clock.advance(2 * MIN);
+    ws.tick();
+    expect(ws.loops()).toHaveLength(0);
+    expect(s.notices).toEqual([{ message: "loop-1 reached until 2026-09-06 10:12, removed", type: "info" }]);
+    ws.clock.advance(3 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(3);
+  });
+
+  test("--until at a due instant removes without a fire", async () => {
+    const s = ws.startSession();
+    await s.command("5m --until 10:05 ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(1);
+    expect(ws.loops()).toHaveLength(0);
+  });
+
+  test("--until HH:mm earlier than now means tomorrow; ISO datetimes work; past ISO rejects", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name tomorrow --until 09:30 a");
+    const expected = new Date(T0);
+    expected.setDate(expected.getDate() + 1);
+    expected.setHours(9, 30, 0, 0);
+    expect(ws.loops()[0]?.until).toBe(expected.getTime());
+    await s.command("list");
+    expect(s.lastNotice()).toBe("tomorrow  active  next 2026-09-06 11:00  every 1h  fires 1  until 2026-09-07 09:30");
+
+    await s.command("1h --name iso --until 2026-09-06T18:00 b");
+    expect(ws.loops()[1]?.until).toBe(new Date(2026, 8, 6, 18, 0, 0, 0).getTime());
+
+    s.clearNotices();
+    await s.command("1h --name past --until 2026-09-06T09:00 c");
+    expect(s.notices).toEqual([{ message: "--until 2026-09-06T09:00 is already in the past", type: "error" }]);
+    await s.command("1h --name garbage --until soon d");
+    expect(s.notices[1]?.type).toBe("error");
+    await s.command("1h --name range --until 25:00 e");
+    expect(s.notices[2]?.type).toBe("error");
+    expect(ws.loops().map((l) => l.name)).toEqual(["tomorrow", "iso"]);
+  });
+
+  test("--max rejects zero, negatives, and non-integers", async () => {
+    const s = ws.startSession();
+    for (const bad of ["0", "-1", "1.5", "x"]) {
+      s.clearNotices();
+      await s.command(`5m --max ${bad} x`);
+      expect(s.notices[0]?.type).toBe("error");
+    }
+    expect(ws.loops()).toHaveLength(0);
+  });
+
+  test("both bounds together: whichever comes first removes the loop", async () => {
+    const s = ws.startSession();
+    await s.command("5m --max 5 --until 10:07 ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    ws.clock.advance(2 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(2);
+    expect(ws.loops()).toHaveLength(0);
+    expect(s.lastNotice()).toBe("loop-1 reached until 2026-09-06 10:07, removed");
+  });
+});
