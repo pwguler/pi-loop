@@ -15,8 +15,8 @@ const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const STATUS_KEY = "pi-loop";
 /** How long the footer says `fired <name> #<n>` after a fire. */
 const PULSE_MS = 5000;
-/** The first line of a fire, as sent: [loop <name> #<n> <YYYY-MM-DD HH:mm>] */
-const FIRE_HEADER = /^\[loop ([A-Za-z0-9][A-Za-z0-9._-]*) #(\d+) (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\n/;
+/** A fire as sent: the header line [loop <name> #<n> <YYYY-MM-DD HH:mm>], then the prompt. */
+const FIRE_MESSAGE = /^\[loop ([A-Za-z0-9][A-Za-z0-9._-]*) #(\d+) (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\n[\s\S]*$/;
 
 // Interval grammar. A phrase is an optional every/each, then either a bare
 // unit word (hourly, hour, day, ...) or one or more <n><unit> pairs (5m, 5 min,
@@ -212,10 +212,12 @@ export function run(pi: LoopHost, deps: Deps): void {
     releaseOwner(ctx, deps);
   });
 
-  // The fire header is stored as the plain bracket line (AC-1). On screen it reads as a heading.
+  // A fire is stored as the plain bracket header plus the prompt (AC-1). On
+  // screen only the header shows, as a heading; the prompt is the loop's own
+  // text and repeating it every fire is noise.
   pi.registerMarkdownTransformer((markdown, { messageType }) => {
     if (messageType !== "user") return markdown;
-    return markdown.replace(FIRE_HEADER, "## $1 #$2 \u00b7 $3\n\n");
+    return markdown.replace(FIRE_MESSAGE, "## $1 #$2 \u00b7 $3");
   });
 
   pi.registerCommand("loop", {
