@@ -95,11 +95,3 @@ grep -rn 'sendUserMessage\|sendMessage' extensions | grep -v sendUserMessage ; t
 ```
 
 The two greps hold the line the extension exists for: no cache markers, no TTL, no context hook, no system prompt change, and `sendUserMessage` as the only path that adds text to the conversation.
-
-## Layout
-
-```
-extensions/pi-loop.ts   the extension: one command, three event handlers
-tests/mock-pi.ts        mock pi host with injected clock, pid, liveness, ticker; sessionManager throws on any history read
-tests/pi-loop.test.ts   one describe per acceptance criterion
-```
