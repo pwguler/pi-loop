@@ -55,3 +55,59 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
     expect(s.fires).toHaveLength(0);
   });
 });
+
+describe("AC-2 next fire is due at lastFiredAt + interval and only when idle", () => {
+  test("fires at the due tick, not before", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    s.settle();
+    ws.clock.advance(4 * MIN + 59_000);
+    ws.tick();
+    expect(s.fires).toHaveLength(1);
+    ws.clock.advance(1000);
+    ws.tick();
+    expect(s.fires).toHaveLength(2);
+    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:05]\nping");
+  });
+
+  test("a tick due while busy fires once on agent_settled, and the next due counts from that fire", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    s.settle();
+
+    // The agent is busy across the due instant; several ticks pass.
+    s.idle = false;
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    ws.clock.advance(2 * MIN);
+    ws.tick();
+    ws.tick();
+    expect(s.fires).toHaveLength(1);
+
+    // Settles at 10:07: exactly one fire, due next at 10:12 not 10:10.
+    s.settle();
+    expect(s.fires).toHaveLength(2);
+    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:07]\nping");
+    ws.tick();
+    s.settle();
+    expect(s.fires).toHaveLength(2);
+
+    ws.clock.advance(3 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(2);
+    ws.clock.advance(2 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(3);
+    expect(s.fires[2]?.text).toBe("[loop loop-1 #3 2026-09-06 10:12]\nping");
+  });
+
+  test("a create while busy fires nothing until the agent settles", async () => {
+    const s = ws.startSession();
+    s.idle = false;
+    await s.command("5m ping");
+    expect(ws.loops()).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
+    s.settle();
+    expect(s.fires).toHaveLength(1);
+  });
+});

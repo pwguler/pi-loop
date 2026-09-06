@@ -68,6 +68,9 @@ export default function piLoop(pi: ExtensionAPI): void {
 }
 
 export function run(pi: LoopHost, deps: Deps): void {
+  /** The started session, if any. Set on session_start, cleared on session_shutdown. */
+  let session: { ctx: LoopContext; stopTicker: () => void; reported?: string } | undefined;
+
   /**
    * Fire the first due loop if the session is idle. Returns an error message
    * when the state file is unreadable; a fire that skips records its error on
@@ -96,6 +99,33 @@ export function run(pi: LoopHost, deps: Deps): void {
     pi.sendUserMessage(`[loop ${due.name} #${due.fires} ${formatLocal(now)}]\n${prompt.value}`);
     return undefined;
   }
+
+  /** One tick: fire what is due, and notify a state-file error once until it changes. */
+  function tick(): void {
+    if (!session) return;
+    const error = fireDue(session.ctx);
+    if (error !== session.reported) {
+      session.reported = error;
+      if (error) session.ctx.ui.notify(error, "error");
+    }
+  }
+
+  pi.on("session_start", (_event, ctx) => {
+    session?.stopTicker();
+    session = undefined;
+    // Interactive sessions only. A -p run has no UI and must not fire loops.
+    if (!ctx.hasUI) return;
+    session = { ctx, stopTicker: deps.ticker(() => safely(tick)) };
+  });
+
+  pi.on("agent_settled", () => {
+    tick();
+  });
+
+  pi.on("session_shutdown", () => {
+    session?.stopTicker();
+    session = undefined;
+  });
 
   pi.registerCommand("loop", {
     description: "Fire a prompt on an interval: /loop <5m|2h|1d> [--name n] [--max n] [--until t] <prompt | @file>; /loop list | stop | pause | resume <name>",
@@ -133,8 +163,7 @@ export function run(pi: LoopHost, deps: Deps): void {
         loops.push(loop);
         saveLoops(ctx.cwd, loops);
         ctx.ui.notify(`created ${name}, every ${cmd.interval}`, "info");
-        const error = fireDue(ctx);
-        if (error) ctx.ui.notify(error, "error");
+        tick();
       }
     },
   });
@@ -314,6 +343,15 @@ function formatLocal(at: number): string {
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Timer callbacks run outside pi's handler error path; never let one crash the process. */
+function safely(fn: () => void): void {
+  try {
+    fn();
+  } catch (e) {
+    console.error(`pi-loop: ${message(e)}`);
+  }
 }
 
 function realDeps(): Deps {
