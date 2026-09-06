@@ -144,6 +144,43 @@ export function run(pi: LoopHost, deps: Deps): void {
       const loops = loaded.value;
       const cmd = parsed.value;
 
+      if (cmd.kind === "list") {
+        ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l)).join("\n"), "info");
+        return;
+      }
+
+      if (cmd.kind === "stop" || cmd.kind === "pause" || cmd.kind === "resume") {
+        const loop = loops.find((l) => l.name === cmd.name);
+        if (!loop) {
+          ctx.ui.notify(`no loop named ${cmd.name}`, "error");
+          return;
+        }
+        if (cmd.kind === "stop") {
+          saveLoops(ctx.cwd, loops.filter((l) => l !== loop));
+          ctx.ui.notify(`stopped ${loop.name}`, "info");
+          return;
+        }
+        if (cmd.kind === "pause") {
+          if (loop.paused) {
+            ctx.ui.notify(`${loop.name} is already paused`, "error");
+            return;
+          }
+          loop.paused = true;
+          saveLoops(ctx.cwd, loops);
+          ctx.ui.notify(`paused ${loop.name}`, "info");
+          return;
+        }
+        if (!loop.paused) {
+          ctx.ui.notify(`${loop.name} is not paused`, "error");
+          return;
+        }
+        loop.paused = false;
+        loop.dueAt = now + (parseInterval(loop.interval) ?? MIN_INTERVAL_MS);
+        saveLoops(ctx.cwd, loops);
+        ctx.ui.notify(`resumed ${loop.name}, next ${formatLocal(loop.dueAt)}`, "info");
+        return;
+      }
+
       if (cmd.kind === "create") {
         const name = cmd.name ?? defaultName(loops);
         if (loops.some((l) => l.name === name)) {
@@ -173,11 +210,17 @@ export function run(pi: LoopHost, deps: Deps): void {
 
 type Command =
   | { kind: "list" }
+  | { kind: "stop" | "pause" | "resume"; name: string }
   | { kind: "create"; interval: string; prompt: PromptSource; name?: string; max?: number; until?: number };
 
 function parseCommand(args: string, now: number): Result<Command> {
   const [head, rest] = nextToken(args);
   if (head === "" || head === "list") return { ok: true, value: { kind: "list" } };
+  if (head === "stop" || head === "pause" || head === "resume") {
+    const [name, extra] = nextToken(rest);
+    if (name === "" || extra.trim() !== "") return { ok: false, error: `usage: /loop ${head} <name>` };
+    return { ok: true, value: { kind: head, name } };
+  }
 
   const usage = "usage: /loop <5m|2h|1d> [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prompt | @file>";
   const intervalMs = parseInterval(head);
@@ -334,6 +377,21 @@ function writeAtomic(file: string, content: string): void {
 }
 
 // Helpers
+
+/** One /loop list line: name, status, next due, interval, count, bounds, last error. */
+function formatLoop(loop: Loop): string {
+  const parts = [
+    loop.name,
+    loop.paused ? "paused" : "active",
+    `next ${loop.paused ? "-" : formatLocal(loop.dueAt)}`,
+    `every ${loop.interval}`,
+    `fires ${loop.fires}`,
+  ];
+  if (loop.max !== undefined) parts.push(`max ${loop.max}`);
+  if (loop.until !== undefined) parts.push(`until ${formatLocal(loop.until)}`);
+  if (loop.lastError !== undefined) parts.push(`error: ${loop.lastError}`);
+  return parts.join("  ");
+}
 
 function formatLocal(at: number): string {
   const d = new Date(at);
