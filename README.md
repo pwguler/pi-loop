@@ -65,6 +65,8 @@ Each fire is one user message:
 <prompt text>
 ```
 
+That is the stored text and what the model sees. On screen the first line is drawn as a heading, `↻ <name> #<fires> · <YYYY-MM-DD HH:mm>`, through pi's display-only Markdown transformer.
+
 ## State
 
 ```

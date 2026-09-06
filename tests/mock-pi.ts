@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost } from "../extensions/pi-loop.ts";
+import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform } from "../extensions/pi-loop.ts";
 
 export interface Fire {
   text: string;
@@ -120,6 +120,7 @@ export class Workspace {
 export class Session implements LoopHost {
   readonly handlers = new Map<string, LoopHandler>();
   readonly commands = new Map<string, (args: string, ctx: LoopContext) => Promise<void>>();
+  readonly transformers: MarkdownTransform[] = [];
   readonly fires: Fire[] = [];
   readonly notices: Notice[] = [];
   /** Every setStatus call, in order; text undefined is a clear. */
@@ -162,6 +163,15 @@ export class Session implements LoopHost {
 
   registerCommand(name: string, options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> }): void {
     this.commands.set(name, options.handler);
+  }
+
+  registerMarkdownTransformer(transformer: MarkdownTransform): void {
+    this.transformers.push(transformer);
+  }
+
+  /** Run the registered display transformers over a message, as pi's renderer does. */
+  display(markdown: string, messageType: "user" | "assistant" | "assistant-thinking" = "user"): string {
+    return this.transformers.reduce((md, t) => t(md, { messageType, isStreaming: false, availableWidth: 80 }), markdown);
   }
 
   sendUserMessage(text: string, options?: unknown): void {

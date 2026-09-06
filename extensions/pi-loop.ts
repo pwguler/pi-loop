@@ -15,6 +15,8 @@ const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const STATUS_KEY = "pi-loop";
 /** How long the footer says `fired <name> #<n>` after a fire. */
 const PULSE_MS = 5000;
+/** The first line of a fire, as sent: [loop <name> #<n> <YYYY-MM-DD HH:mm>] */
+const FIRE_HEADER = /^\[loop ([A-Za-z0-9][A-Za-z0-9._-]*) #(\d+) (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\n/;
 
 // Interval grammar. A phrase is an optional every/each, then either a bare
 // unit word (hourly, hour, day, ...) or one or more <n><unit> pairs (5m, 5 min,
@@ -56,12 +58,19 @@ export interface LoopContext {
 
 export type LoopHandler = (event: unknown, ctx: LoopContext) => void;
 
+export type MarkdownTransform = (
+  markdown: string,
+  context: { messageType: "user" | "assistant" | "assistant-thinking"; isStreaming: boolean; availableWidth: number },
+) => string;
+
 export interface LoopHost {
   on(event: "session_start" | "session_shutdown" | "agent_settled", handler: LoopHandler): void;
   registerCommand(
     name: string,
     options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> },
   ): void;
+  /** Display-only: pi renders the returned Markdown; the stored message and model context are untouched. */
+  registerMarkdownTransformer(transformer: MarkdownTransform): void;
   sendUserMessage(text: string): void;
 }
 
@@ -201,6 +210,12 @@ export function run(pi: LoopHost, deps: Deps): void {
     session?.stopTicker();
     session = undefined;
     releaseOwner(ctx, deps);
+  });
+
+  // The fire header is stored as the plain bracket line (AC-1). On screen it reads as a heading.
+  pi.registerMarkdownTransformer((markdown, { messageType }) => {
+    if (messageType !== "user") return markdown;
+    return markdown.replace(FIRE_HEADER, "### \u21bb $1 #$2 \u00b7 $3\n\n");
   });
 
   pi.registerCommand("loop", {
