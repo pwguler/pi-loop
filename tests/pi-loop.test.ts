@@ -396,3 +396,47 @@ describe("AC-6 one owner session per cwd", () => {
     expect(ws.owner()).toBeUndefined();
   });
 });
+
+describe("AC-8 names", () => {
+  test("default is loop-<k> with the lowest free k", async () => {
+    const s = ws.startSession();
+    await s.command("5m a");
+    await s.command("5m b");
+    await s.command("5m c");
+    expect(ws.loops().map((l) => l.name)).toEqual(["loop-1", "loop-2", "loop-3"]);
+    await s.command("stop loop-2");
+    await s.command("5m d");
+    expect(ws.loops().map((l) => l.name)).toEqual(["loop-1", "loop-3", "loop-2"]);
+    await s.command("5m e");
+    expect(ws.loops().map((l) => l.name)).toEqual(["loop-1", "loop-3", "loop-2", "loop-4"]);
+  });
+
+  test("--name sets the name; an existing name rejects with an error and creates nothing", async () => {
+    const s = ws.startSession();
+    await s.command("5m --name nightly a");
+    expect(ws.loops().map((l) => l.name)).toEqual(["nightly"]);
+    expect(s.fires[0]?.text).toBe("[loop nightly #1 2026-09-06 10:00]\na");
+
+    s.clearNotices();
+    await s.command("10m --name nightly b");
+    expect(s.notices).toEqual([{ message: "loop nightly already exists", type: "error" }]);
+    expect(ws.loops()).toHaveLength(1);
+    expect(ws.loops()[0]?.interval).toBe("5m");
+    expect(s.fires).toHaveLength(1);
+
+    // A default name that collides with an explicit one is skipped, not duplicated.
+    await s.command("5m --name loop-1 c");
+    await s.command("5m d");
+    expect(ws.loops().map((l) => l.name)).toEqual(["nightly", "loop-1", "loop-2"]);
+  });
+
+  test("--name rejects names outside [A-Za-z0-9._-] and a missing value", async () => {
+    const s = ws.startSession();
+    for (const bad of ["--name 'a b' x", "--name a/b x", "--name -x y", "--name"]) {
+      s.clearNotices();
+      await s.command(`5m ${bad}`);
+      expect(s.notices[0]?.type).toBe("error");
+    }
+    expect(ws.loops()).toHaveLength(0);
+  });
+});
