@@ -1,6 +1,6 @@
 # pi-loop
 
-A pi extension that re-sends one prompt on a fixed interval inside the current session. The timer lives in the extension, state lives on disk, and the only text it ever adds to the conversation is the fire itself: one trailing user message per fire, sent through `pi.sendUserMessage`. Nothing before the tail is touched.
+Recurring prompts inside a pi session. Each loop fires its prompt on its interval as one trailing user message, keeps its count across restarts, and adds nothing else to the conversation: no context hook, no injected text, no cache marker. State is two JSON files in the workspace.
 
 ## Install
 

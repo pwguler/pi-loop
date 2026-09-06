@@ -1,7 +1,7 @@
 {
   "name": "pi-loop",
   "version": "0.1.0",
-  "description": "Re-send one prompt on a fixed interval inside the current pi session. State on disk, one tail message per fire, nothing else touched.",
+  "description": "Recurring prompts inside a pi session. Each loop fires as one trailing user message on its interval, survives restarts, and adds nothing else to the conversation.",
   "type": "module",
   "keywords": [
     "pi-package",
