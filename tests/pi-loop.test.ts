@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
-import { Workspace } from "./mock-pi.ts";
+import { Workspace, type Session } from "./mock-pi.ts";
 
 // A fixed instant in local time so header and list output are asserted
 // without timezone math: 2026-09-06 10:00 local.
@@ -12,6 +12,24 @@ const T0 = new Date(2026, 8, 6, 10, 0, 0, 0).getTime();
 const MIN = 60_000;
 
 let ws: Workspace;
+
+/** The text listing: what a no-UI session prints for /loop and /loop list. */
+async function listText(s: Session): Promise<string> {
+  const was = s.hasUI;
+  s.hasUI = false;
+  s.clearNotices();
+  await s.command("list");
+  s.hasUI = was;
+  return s.lastNotice();
+}
+
+/** The picker's rows: open it, Esc. */
+async function rows(s: Session): Promise<string[]> {
+  s.selects.length = 0;
+  s.selectImpl = () => undefined;
+  await s.command("");
+  return s.selects[0]?.options ?? [];
+}
 
 beforeEach(() => {
   ws = new Workspace(T0);
@@ -159,29 +177,31 @@ describe("AC-2 next fire is due at lastFiredAt + interval and only when idle", (
 });
 
 describe("AC-7 list, stop, pause, resume", () => {
-  test("/loop list shows name, interval, next due, count, status; bare /loop without a UI prints the same", async () => {
+  test("the listing shows name, interval, next due, count, status; /loop and /loop list are the same", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     await s.command("2h --name nightly --max 4 pong");
-    s.clearNotices();
-    await s.command("list");
-    const listed = s.lastNotice();
-    expect(listed).toBe(
+    expect(await listText(s)).toBe(
       [
         "loop-1  active  next 2026-09-06 10:05  every 5m  fires 1",
         "nightly  active  next 2026-09-06 12:00  every 2h  fires 1  max 4",
       ].join("\n"),
     );
-    // Bare /loop opens the picker in a UI session (AC-P1); without a UI it prints the same text (AC-P6).
-    const plain = ws.startSession({ hasUI: false });
-    await plain.command("");
-    expect(plain.lastNotice()).toBe(listed.replace("active", `owned by pid ${s.pid}`).replace("active", `owned by pid ${s.pid}`));
+    // In a UI session both forms open the same picker (AC-P1).
+    const bare = await rows(s);
+    s.selects.length = 0;
+    await s.command("list");
+    expect(s.selects[0]?.options).toEqual(bare);
+    expect(bare).toEqual([
+      "loop-1      active   next 10:05  every 5m  #1",
+      "nightly     active   next 12:00  every 2h  #1",
+    ]);
   });
 
-  test("/loop list with no loops says so", async () => {
+  test("the listing with no loops says so, in both forms", async () => {
     const s = ws.startSession();
-    await s.command("list");
-    expect(s.lastNotice()).toBe("no loops");
+    expect(await listText(s)).toBe("no loops");
+    expect(await rows(s)).toEqual(["no loops"]);
   });
 
   test("/loop stop <name> removes the loop; unknown names are an error", async () => {
@@ -208,9 +228,7 @@ describe("AC-7 list, stop, pause, resume", () => {
     await s.command("5m ping");
     ws.clock.advance(MIN);
     await s.command("pause loop-1");
-    s.clearNotices();
-    await s.command("list");
-    expect(s.lastNotice()).toBe("loop-1  paused  next -  every 5m  fires 1");
+    expect(await listText(s)).toBe("loop-1  paused  next -  every 5m  fires 1");
 
     ws.clock.advance(20 * MIN);
     ws.tick();
@@ -221,9 +239,7 @@ describe("AC-7 list, stop, pause, resume", () => {
     await s.command("resume loop-1");
     ws.tick();
     expect(s.fires).toHaveLength(1);
-    s.clearNotices();
-    await s.command("list");
-    expect(s.lastNotice()).toBe("loop-1  active  next 2026-09-06 10:26  every 5m  fires 1");
+    expect(await listText(s)).toBe("loop-1  active  next 2026-09-06 10:26  every 5m  fires 1");
     ws.clock.advance(5 * MIN);
     ws.tick();
     expect(s.fires).toHaveLength(2);
@@ -268,9 +284,7 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
     ws.clock.advance(5 * MIN);
     ws.tick();
     expect(s.fires).toHaveLength(1);
-    s.clearNotices();
-    await s.command("list");
-    expect(s.lastNotice()).toMatch(/^loop-1  active  next 2026-09-06 10:10  every 5m  fires 1  error: prompt file prompt\.md: .*ENOENT/);
+    expect(await listText(s)).toMatch(/^loop-1  active  next 2026-09-06 10:10  every 5m  fires 1  error: prompt file prompt\.md: .*ENOENT/);
 
     // The loop is alive: the file comes back and the next fire is #2 with no error shown.
     fs.writeFileSync(ws.file("prompt.md"), "v2");
@@ -278,9 +292,7 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
     ws.tick();
     expect(s.fires).toHaveLength(2);
     expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:10]\nv2");
-    s.clearNotices();
-    await s.command("list");
-    expect(s.lastNotice()).toBe("loop-1  active  next 2026-09-06 10:15  every 5m  fires 1".replace("fires 1", "fires 2"));
+    expect(await listText(s)).toBe("loop-1  active  next 2026-09-06 10:15  every 5m  fires 1".replace("fires 1", "fires 2"));
   });
 
   test("an empty file at fire time is a skip with its own error", async () => {
@@ -288,8 +300,7 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
     fs.writeFileSync(ws.file("prompt.md"), "   \n");
     await s.command("5m @prompt.md");
     expect(s.fires).toHaveLength(0);
-    await s.command("list");
-    expect(s.lastNotice()).toMatch(/error: prompt file prompt\.md is empty$/);
+    expect(await listText(s)).toMatch(/error: prompt file prompt\.md is empty$/);
   });
 });
 
@@ -301,8 +312,7 @@ describe("AC-4 state lives in <cwd>/.pi-loop/loops.json and survives a restart",
       JSON.stringify([{ name: "loop-1", interval: "2m", prompt: { kind: "text", text: "say hello" }, dueAt: T0, fires: 5, paused: false }]),
     );
     const s = ws.startSession();
-    await s.command("list");
-    expect(s.lastNotice()).toBe("loop-1  active  next 2026-09-06 10:00  every 2m  fires 5");
+    expect(await listText(s)).toBe("loop-1  active  next 2026-09-06 10:00  every 2m  fires 5");
     ws.tick();
     expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #6 2026-09-06 10:00]\nsay hello"]);
     expect(ws.loops()).toEqual([
@@ -324,8 +334,7 @@ describe("AC-4 state lives in <cwd>/.pi-loop/loops.json and survives a restart",
 
     expect(fs.existsSync(ws.file(".pi-loop/loops.json"))).toBe(true);
     const b = ws.startSession();
-    await b.command("list");
-    expect(b.lastNotice()).toBe(
+    expect(await listText(b)).toBe(
       [
         "loop-1  active  next 2026-09-06 10:05  every 5m  fires 1  max 10  until 2026-09-06 23:30",
         "nightly  active  next 2026-09-06 12:00  every 2h  fires 0  error: prompt file notes.md: ENOENT: no such file or directory, open '" + ws.file("notes.md") + "'",
@@ -365,8 +374,7 @@ describe("AC-5 catch-up: a loop due on resume fires once, then continues on cade
     expect(b.fires).toHaveLength(1);
 
     // Next due is 13:20, counted from the catch-up fire.
-    await b.command("list");
-    expect(b.lastNotice()).toBe("loop-1  active  next 2026-09-06 13:20  every 50m  fires 2");
+    expect(await listText(b)).toBe("loop-1  active  next 2026-09-06 13:20  every 50m  fires 2");
     ws.clock.advance(49 * MIN);
     ws.tick();
     expect(b.fires).toHaveLength(1);
@@ -397,9 +405,7 @@ describe("AC-6 one owner session per cwd", () => {
     expect(ws.owner()).toEqual({ pid: a.pid, sessionId: a.sessionId, claimedAt: T0 });
 
     const b = ws.startSession();
-    b.clearNotices();
-    await b.command("list");
-    expect(b.lastNotice()).toBe(`loop-1  owned by pid ${a.pid}  next 2026-09-06 10:05  every 5m  fires 1`);
+    expect(await listText(b)).toBe(`loop-1  owned by pid ${a.pid}  next 2026-09-06 10:05  every 5m  fires 1`);
 
     ws.clock.advance(5 * MIN);
     ws.tick();
@@ -588,8 +594,7 @@ describe("AC-9 bounds", () => {
     expected.setDate(expected.getDate() + 1);
     expected.setHours(9, 30, 0, 0);
     expect(ws.loops()[0]?.until).toBe(expected.getTime());
-    await s.command("list");
-    expect(s.lastNotice()).toBe("tomorrow  active  next 2026-09-06 11:00  every 1h  fires 1  until 2026-09-07 09:30");
+    expect(await listText(s)).toBe("tomorrow  active  next 2026-09-06 11:00  every 1h  fires 1  until 2026-09-07 09:30");
 
     await s.command("1h --name iso --until 2026-09-06T18:00 b");
     expect(ws.loops()[1]?.until).toBe(new Date(2026, 8, 6, 18, 0, 0, 0).getTime());
@@ -1074,13 +1079,14 @@ describe("AC-P6 back and Esc on the detail return to the list; no UI prints text
     expect(ws.loops()).toHaveLength(1);
   });
 
-  test("bare /loop without a UI prints exactly /loop list", async () => {
+  test("without a UI, /loop and /loop list both print the text listing", async () => {
     const s = ws.startSession();
-    await s.command("5m ping");
+    await s.command("5m --name a --max 3 ping");
     s.shutdown();
     const p = ws.startSession({ hasUI: false });
     await p.command("list");
     const listed = p.lastNotice();
+    expect(listed).toBe("a  active  next 2026-09-06 10:05  every 5m  fires 1  max 3");
     p.clearNotices();
     await p.command("");
     expect(p.lastNotice()).toBe(listed);

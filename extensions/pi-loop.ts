@@ -223,7 +223,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   });
 
   pi.registerCommand("loop", {
-    description: "Fire a prompt on an interval: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>; /loop list | stop | pause | resume <name>",
+    description: "Fire a prompt on an interval: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>; /loop (or list) picks a loop; /loop stop | pause | resume <name>",
     handler: async (args, ctx) => {
       await handle(args, ctx);
       render();
@@ -245,14 +245,14 @@ export function run(pi: LoopHost, deps: Deps): void {
     const loops = loaded.value;
     const cmd = parsed.value;
 
-    if (cmd.kind === "list" || (cmd.kind === "picker" && !ctx.hasUI)) {
+    // /loop and /loop list: the picker where there is a UI, one text line per loop where there is not.
+    if (cmd.kind === "list") {
+      if (ctx.hasUI) {
+        await picker(ctx);
+        return;
+      }
       const owner = otherOwner(ctx, deps);
       ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l, owner)).join("\n"), "info");
-      return;
-    }
-
-    if (cmd.kind === "picker") {
-      await picker(ctx);
       return;
     }
 
@@ -314,9 +314,10 @@ export function run(pi: LoopHost, deps: Deps): void {
   }
 
   /**
-   * Bare /loop: pi's built-in picker. One row per loop; Enter opens the loop's
-   * detail with pause or resume, stop, back. Every action runs the typed command,
-   * so the state file, the notice, and the footer update the same way.
+   * /loop and /loop list in a UI session: pi's built-in picker. One row per
+   * loop; Enter opens the loop's detail with pause or resume, stop, back. Every
+   * action runs the typed command, so the state file, the notice, and the
+   * footer update the same way.
    */
   async function picker(ctx: LoopContext): Promise<void> {
     for (;;) {
@@ -347,7 +348,6 @@ export function run(pi: LoopHost, deps: Deps): void {
 
 type Command =
   | { kind: "list" }
-  | { kind: "picker" }
   | { kind: "stop" | "pause" | "resume"; name: string }
   | { kind: "create"; intervalMs: number; prompt: PromptSource; name?: string; max?: number; until?: number };
 
@@ -361,8 +361,7 @@ const USAGE = "usage: /loop [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prom
 
 function parseCommand(args: string, now: number): Result<Command> {
   const [head, rest] = nextToken(args);
-  if (head === "") return { ok: true, value: { kind: "picker" } };
-  if (head === "list") return { ok: true, value: { kind: "list" } };
+  if (head === "" || head === "list") return { ok: true, value: { kind: "list" } };
   if (head === "stop" || head === "pause" || head === "resume") {
     const [name, extra] = nextToken(rest);
     if (name === "" || extra.trim() !== "") return { ok: false, error: `usage: /loop ${head} <name>` };

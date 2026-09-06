@@ -134,6 +134,7 @@ export class Session implements LoopHost {
   confirmImpl: (title: string, message: string) => boolean = () => false;
   readonly ctx: LoopContext;
   idle = true;
+  hasUI: boolean;
 
   constructor(
     readonly ws: Workspace,
@@ -142,9 +143,12 @@ export class Session implements LoopHost {
     hasUI: boolean,
   ) {
     const self = this;
+    this.hasUI = hasUI;
     this.ctx = {
       cwd: ws.cwd,
-      hasUI,
+      get hasUI() {
+        return self.hasUI;
+      },
       sessionManager: historyFree(sessionId),
       isIdle: () => self.idle,
       ui: {
