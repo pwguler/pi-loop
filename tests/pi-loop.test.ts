@@ -354,7 +354,7 @@ describe("AC-4 state lives in <cwd>/.pi-loop/loops.json and survives a restart",
   });
 });
 
-describe("AC-5 catch-up: a loop due on resume fires once, then continues on cadence from that fire", () => {
+describe("AC-5 catch-up: a loop due on resume fires once, then continues on its interval from that fire", () => {
   test("many missed fires collapse into one, at the first idle moment", async () => {
     const a = ws.startSession();
     await a.command("50m ping");

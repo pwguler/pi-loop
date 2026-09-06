@@ -83,7 +83,7 @@ That is the stored text and what the model sees. On screen the whole message is 
 <cwd>/.pi-loop/owner.json   {pid, sessionId, claimedAt}: the one session in this cwd that fires
 ```
 
-Only the owner fires. A second pi session in the same cwd lists the loops as `owned by pid <n>` and fires nothing. When the owner pid is dead, the next session takes over. Owner shutdown removes `owner.json`. A restart in the same cwd resumes every non-stopped loop; a loop whose due time passed while pi was down fires once at the first idle moment, then continues on cadence from that fire.
+Only the owner fires. A second pi session in the same cwd lists the loops as `owned by pid <n>` and fires nothing. When the owner pid is dead, the next session takes over. Owner shutdown removes `owner.json`. A restart in the same cwd resumes every non-stopped loop; a loop whose due time passed while pi was down fires once at the first idle moment, then continues on its interval from that fire.
 
 Loop state is never read from the conversation. Compaction, `/tree`, and forks do not change a counter or a due time. Sessions without a UI (`pi -p`, RPC) never claim ownership and never fire.
 
