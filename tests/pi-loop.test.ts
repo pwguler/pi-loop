@@ -274,12 +274,12 @@ describe("AC-7 list, stop, pause, resume", () => {
     s.clearNotices();
     await s.command("resume loop-1");
     expect(s.notices[0]?.type).toBe("error");
-    expect(s.lastNotice()).toBe("loop-1 is not paused");
+    expect(s.lastNotice()).toBe("loop-1 is not paused; /loop pause loop-1 pauses it");
     await s.command("pause loop-1");
     s.clearNotices();
     await s.command("pause loop-1");
     expect(s.notices[0]?.type).toBe("error");
-    expect(s.lastNotice()).toBe("loop-1 is already paused");
+    expect(s.lastNotice()).toBe("loop-1 is already paused; /loop resume loop-1 resumes it");
   });
 });
 
@@ -342,6 +342,18 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
 });
 
 describe("AC-4 state lives in <cwd>/.pi-loop/loops.json and survives a restart", () => {
+  test("a loops.json that is not JSON is an error that says to fix or delete it", async () => {
+    fs.mkdirSync(ws.file(".pi-loop"), { recursive: true });
+    fs.writeFileSync(ws.file(".pi-loop/loops.json"), "{not json");
+    const s = ws.startSession();
+    s.clearNotices();
+    await s.command("list");
+    expect(s.notices).toHaveLength(1);
+    expect(s.notices[0]?.type).toBe("error");
+    expect(s.lastNotice()).toStartWith(`${ws.file(".pi-loop/loops.json")}: `);
+    expect(s.lastNotice()).toEndWith(", fix or delete it");
+  });
+
   test("a loops.json written with the first schema (interval: \"2m\") loads, fires, and is rewritten as intervalMs", async () => {
     fs.mkdirSync(ws.file(".pi-loop"), { recursive: true });
     fs.writeFileSync(
@@ -548,7 +560,7 @@ describe("AC-8 names", () => {
 
     s.clearNotices();
     await s.command("10m --name nightly b");
-    expect(s.notices).toEqual([{ message: "loop nightly already exists", type: "error" }]);
+    expect(s.notices).toEqual([{ message: "loop nightly already exists; pick another --name or /loop stop nightly", type: "error" }]);
     expect(ws.loops()).toHaveLength(1);
     expect(ws.loops()[0]?.intervalMs).toBe(5 * MIN);
     expect(s.fires).toHaveLength(1);
@@ -672,7 +684,7 @@ describe("AC-9 bounds", () => {
 
     s.clearNotices();
     await s.command("1h --name past --until 2026-09-06T09:00 c");
-    expect(s.notices).toEqual([{ message: "--until 2026-09-06T09:00 is already in the past", type: "error" }]);
+    expect(s.notices).toEqual([{ message: "--until 2026-09-06T09:00 is already in the past; give a later time", type: "error" }]);
     await s.command("1h --name garbage --until soon d");
     expect(s.notices[1]?.type).toBe("error");
     await s.command("1h --name range --until 25:00 e");
@@ -1686,7 +1698,7 @@ describe("AC-R5 p on the panel pauses or resumes and returns to the roster", () 
     s.clearNotices();
     p.key("p");
     await s.flush();
-    expect(s.notices).toEqual([{ message: "no loop named b", type: "error" }]);
+    expect(s.notices).toEqual([{ message: "no loop named b; /loop list shows the names", type: "error" }]);
     expect(ws.loops().map((l) => [l.name, l.paused])).toEqual([["c", false]]);
     expect(selectedName(s)).toBe("c");
   });

@@ -117,7 +117,7 @@ function parseUntil(value: string, now: number): Result<number> {
     at = Date.parse(value);
     if (Number.isNaN(at)) return { ok: false, error: `bad --until "${value}": use an ISO datetime or HH:mm` };
   }
-  if (at <= now) return { ok: false, error: `--until ${value} is already in the past` };
+  if (at <= now) return { ok: false, error: `--until ${value} is already in the past; give a later time` };
   return { ok: true, value: at };
 }
 

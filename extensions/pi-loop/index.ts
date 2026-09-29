@@ -331,7 +331,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     if (cmd.kind === "stop" || cmd.kind === "pause" || cmd.kind === "resume") {
       const loop = loops.find((l) => l.name === cmd.name);
       if (!loop) {
-        ctx.ui.notify(`no loop named ${cmd.name}`, "error");
+        ctx.ui.notify(`no loop named ${cmd.name}; /loop list shows the names`, "error");
         return;
       }
       if (cmd.kind === "stop") {
@@ -342,7 +342,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       }
       if (cmd.kind === "pause") {
         if (loop.paused) {
-          ctx.ui.notify(`${loop.name} is already paused`, "error");
+          ctx.ui.notify(`${loop.name} is already paused; /loop resume ${loop.name} resumes it`, "error");
           return;
         }
         loop.paused = true;
@@ -351,7 +351,7 @@ export function run(pi: LoopHost, deps: Deps): void {
         return;
       }
       if (!loop.paused) {
-        ctx.ui.notify(`${loop.name} is not paused`, "error");
+        ctx.ui.notify(`${loop.name} is not paused; /loop pause ${loop.name} pauses it`, "error");
         return;
       }
       loop.paused = false;
@@ -374,7 +374,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       const latest = reloaded.value;
       const name = cmd.name ?? (chosen?.ok ? uniqueName(chosen.name, latest) : defaultName(latest));
       if (latest.some((l) => l.name === name)) {
-        ctx.ui.notify(`loop ${name} already exists`, "error");
+        ctx.ui.notify(`loop ${name} already exists; pick another --name or /loop stop ${name}`, "error");
         return;
       }
       const loop: Loop = {

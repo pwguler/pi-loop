@@ -33,7 +33,7 @@ export function loadLoops(cwd: string): Result<Loop[]> {
   try {
     data = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (e) {
-    return { ok: false, error: `${file}: ${message(e)}` };
+    return { ok: false, error: `${file}: ${message(e)}, fix or delete it` };
   }
   if (!Array.isArray(data)) return { ok: false, error: `${file}: unexpected shape, fix or delete it` };
   const loops: Loop[] = [];
