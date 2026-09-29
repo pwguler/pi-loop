@@ -2066,7 +2066,7 @@ describe("AC-N2 the first rule that applies names the loop", () => {
 });
 
 describe("AC-N3 the naming call", () => {
-  test("goes to the session's model with one user message stating the rule then the prompt, maxTokens 256, no retries, an 8 s timeout", async () => {
+  test("goes to the session's model with one user message stating the rule then the prompt, maxTokens 4096, no retries, a 20 s timeout", async () => {
     const s = modelSession();
     s.modelAnswer = { text: "stale-reviews" };
     await s.command(`5m ${LONG}`);
@@ -2083,10 +2083,17 @@ describe("AC-N3 the naming call", () => {
     expect(text).toContain("1 to 3 lowercase words joined by hyphens, at most 16 characters");
     expect(text).toContain("only");
     expect(text?.endsWith(LONG)).toBe(true);
-    expect(call?.options?.maxTokens).toBe(256);
+    expect(call?.options?.maxTokens).toBe(4096);
     expect(call?.options?.maxRetries).toBe(0);
-    expect(call?.options?.timeoutMs).toBe(8000);
+    expect(call?.options?.timeoutMs).toBe(20000);
     expect(call?.options?.signal).toBe(ws.namingDeadlines[0]?.signal);
+  });
+
+  test("a reasoning model that reasons 1024 tokens before its answer still names the loop", async () => {
+    const s = modelSession();
+    s.modelAnswer = { reasoningTokens: 1024, text: "send-greeting" };
+    const made = await create(s, `5m ${LONG}`);
+    expect([made.name, made.notice]).toEqual(["send-greeting", "created send-greeting, every 5m"]);
   });
 });
 
@@ -2150,7 +2157,7 @@ describe("AC-N5 no usable name falls back to loop-<k>", () => {
     await s.flush();
   });
 
-  test("a call past 8 seconds is abandoned even when the provider ignores the abort, and its late rejection is handled", async () => {
+  test("a call past 20 seconds is abandoned even when the provider ignores the abort, and its late rejection is handled", async () => {
     const s = modelSession();
     for (const answer of ["never", "until-aborted"] as const) {
       s.modelAnswer = answer;

@@ -7,7 +7,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { Loop, LoopContext, PromptSource } from "./types.ts";
 
 /** How long the model may take to name a loop before it is abandoned. */
-export const NAMING_TIMEOUT_MS = 8000;
+export const NAMING_TIMEOUT_MS = 20_000;
 /** Names fit the roster's 16-column name field. */
 const MAX_NAME = 16;
 const CHOSEN_NAME = /^[a-z0-9][a-z0-9._-]*$/;
@@ -62,7 +62,7 @@ function askModel(
       registry.complete(
         model,
         { messages: [{ role: "user", content: [{ type: "text", text: `${RULE}\n\nTask: ${text}` }], timestamp: now }] },
-        { signal, timeoutMs: NAMING_TIMEOUT_MS, maxRetries: 0, maxTokens: 256 },
+        { signal, timeoutMs: NAMING_TIMEOUT_MS, maxRetries: 0, maxTokens: 4096 },
       ),
     )
     .then(fromAnswer, (): Chosen => ({ ok: false, reason: "failed" }));

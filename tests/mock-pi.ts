@@ -43,12 +43,15 @@ export interface ModelCall {
 }
 
 /**
- * How the scripted model answers: with text, with an error or abort stop
- * reason, by throwing, by never settling until its signal aborts (then it
- * rejects), or by never settling at all, deaf to the signal.
+ * How the scripted model answers: with text, with text after reasoning a
+ * number of tokens first (like a reasoning model, it stops at "length" with
+ * only its thinking when maxTokens runs out before the text), with an error or
+ * abort stop reason, by throwing, by never settling until its signal aborts
+ * (then it rejects), or by never settling at all, deaf to the signal.
  */
 export type ModelAnswer =
   | { text: string }
+  | { reasoningTokens: number; text: string }
   | { stopReason: Extract<StopReason, "error" | "aborted"> }
   | { throws: Error }
   | "until-aborted"
@@ -68,10 +71,10 @@ export const TEST_MODEL: Model<Api> = {
   maxTokens: 4096,
 };
 
-function assistant(text: string, stopReason: StopReason): AssistantMessage {
+function assistant(text: string, stopReason: StopReason, content: AssistantMessage["content"] = [{ type: "text", text }]): AssistantMessage {
   return {
     role: "assistant",
-    content: [{ type: "text", text }],
+    content,
     api: TEST_MODEL.api,
     provider: TEST_MODEL.provider,
     model: TEST_MODEL.id,
@@ -148,7 +151,7 @@ export class Workspace {
     return JSON.parse(fs.readFileSync(p, "utf8")) as OwnerFile;
   }
 
-  /** The 8 seconds of every naming deadline started so far pass now. */
+  /** The 20 seconds of every naming deadline started so far pass now. */
   expireNaming(): void {
     for (const c of this.namingDeadlines) c.abort();
   }
@@ -279,6 +282,11 @@ export class Session implements LoopHost {
           }
           if ("throws" in answer) throw answer.throws;
           if ("stopReason" in answer) return Promise.resolve(assistant("", answer.stopReason));
+          if ("reasoningTokens" in answer) {
+            const thinking = { type: "thinking" as const, thinking: "reasoning ".repeat(answer.reasoningTokens) };
+            if ((options?.maxTokens ?? Infinity) < answer.reasoningTokens) return Promise.resolve(assistant("", "length", [thinking]));
+            return Promise.resolve(assistant(answer.text, "stop", [thinking, { type: "text", text: answer.text }]));
+          }
           return Promise.resolve(assistant(answer.text, "stop"));
         },
       },
