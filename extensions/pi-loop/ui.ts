@@ -1,15 +1,16 @@
-// What the user sees: the footer status line, the picker rows, the loop's
+// What the user sees: the status line below the editor, the picker rows, the loop's
 // detail panel, the plain-text list line, and how a fire is drawn in the
 // transcript. Everything here is display; nothing here touches state or the
 // conversation.
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { formatInterval } from "./interval.ts";
 import type { Loop, Panel } from "./types.ts";
 
 type Color = Parameters<Theme["fg"]>[0];
 
-interface Segment {
+export interface Segment {
   text: string;
   color: Color;
   bold?: boolean;
@@ -17,12 +18,15 @@ interface Segment {
 
 const SEP: Segment = { text: "\u00b7", color: "dim" };
 
+const HINT: Segment = { text: "\u2193/\u2190 to manage", color: "dim" };
+
 /**
- * The footer status line as colored segments, or undefined to clear it. The
- * count carries the state color; there is no glyph.
- * Owner:     2 active, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error]
- * Paused:    1 paused
- * Non-owner: 2 loops · owned by pid 4242
+ * The status line as colored segments, or undefined when there is no line.
+ * The count carries the state color; there is no glyph.
+ * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · ↓/← to manage
+ * Paused:    1 paused loop · ↓/← to manage
+ * Non-owner: 2 loops · owned by pid 4242 · ↓/← to manage
+ * No loops, just fired: fired fast #3
  */
 export function statusLine(
   loops: Loop[],
@@ -37,9 +41,11 @@ export function statusLine(
   }
   if (owner !== undefined) {
     return [
-      { text: `${loops.length} loop${loops.length === 1 ? "" : "s"}`, color: "muted" },
+      { text: plural(loops.length, "loop"), color: "muted" },
       SEP,
       { text: `owned by pid ${owner}`, color: "muted" },
+      SEP,
+      HINT,
     ];
   }
   const active = loops.filter((l) => !l.paused);
@@ -48,10 +54,10 @@ export function statusLine(
   const next = active.reduce<Loop | undefined>((a, l) => (a === undefined || l.dueAt < a.dueAt ? l : a), undefined);
   const due = next !== undefined && next.dueAt <= now && !idle;
 
-  const counts: string[] = [];
-  if (active.length > 0) counts.push(`${active.length} active`);
-  if (paused > 0) counts.push(`${paused} paused`);
-  const count = counts.join(", ");
+  const count =
+    active.length === 0
+      ? plural(paused, "paused loop")
+      : `${plural(active.length, "active loop")}${paused > 0 ? `, ${paused} paused` : ""}`;
 
   const out: Segment[] = [];
   if (pulse) {
@@ -64,17 +70,32 @@ export function statusLine(
     out.push({ text: count, color: "success" }, SEP);
     out.push({ text: "next", color: "muted" }, { text: next.name, color: "accent" }, { text: formatLocal(next.dueAt).slice(11), color: "dim" });
   }
-  if (errors > 0) out.push(SEP, { text: `${errors} error${errors === 1 ? "" : "s"}`, color: "error" });
+  if (errors > 0) out.push(SEP, { text: plural(errors, "error"), color: "error" });
+  out.push(SEP, HINT);
   return out;
 }
 
-export function paint(segments: Segment[], theme: Pick<Theme, "fg" | "bold">): string {
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+function paint(segments: Segment[], theme: Pick<Theme, "fg" | "bold">): string {
   return segments
     .map((s) => {
       const colored = theme.fg(s.color, s.text);
       return s.bold ? theme.bold(colored) : colored;
     })
     .join(" ");
+}
+
+/** The status line widget: one line, two-space indent, cut to the width it is given. */
+export function statusWidget(line: () => Segment[], theme: Pick<Theme, "fg" | "bold">): Panel {
+  return {
+    render(width) {
+      return [truncateToWidth(`  ${paint(line(), theme)}`, width)];
+    },
+    invalidate() {},
+  };
 }
 
 /** One picker row: name, status, next, interval, fires. */

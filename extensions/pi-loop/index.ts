@@ -9,12 +9,12 @@ import { defaultName, parseCommand } from "./command.ts";
 import { formatInterval } from "./interval.ts";
 import { claimOwner, loadLoops, message, otherOwner, readPrompt, releaseOwner, saveLoops } from "./state.ts";
 import type { Deps, Loop, LoopContext, LoopHost } from "./types.ts";
-import { detailPanel, displayFire, formatLoop, formatLocal, paint, pickerRow, statusLine, type PanelAction } from "./ui.ts";
+import { detailPanel, displayFire, formatLoop, formatLocal, pickerRow, statusLine, statusWidget, type PanelAction, type Segment } from "./ui.ts";
 
 export type { Deps, Loop, LoopContext, LoopHandler, LoopHost, MarkdownTransform, Panel, PromptSource } from "./types.ts";
 
-const STATUS_KEY = "pi-loop";
-/** How long the footer says `fired <name> #<n>` after a fire. */
+const WIDGET_KEY = "pi-loop";
+/** How long the status line says `fired <name> #<n>` after a fire. */
 const PULSE_MS = 5000;
 
 /** What one fireDue did: nothing, a state-file error, or a fire. */
@@ -25,8 +25,12 @@ interface Session {
   stopTicker: () => void;
   /** Last state-file error shown, so it is shown once until it changes. */
   reported?: string;
-  /** The status line as last rendered, so setStatus is called only on change. */
+  /** The status line's text as last rendered, so the screen is touched only on change. */
   status?: string;
+  /** The status line the widget draws. */
+  line: Segment[];
+  /** The registered widget's tui, through which every later change is redrawn; undefined while no widget is registered. */
+  tui?: { requestRender(): void };
   /** The last fire, shown in the status line until `until`. */
   pulse?: { name: string; fires: number; until: number };
 }
@@ -93,7 +97,11 @@ export function run(pi: LoopHost, deps: Deps): void {
     render();
   }
 
-  /** Redraw the footer status line; setStatus is called only when the text changes. */
+  /**
+   * Redraw the status line, only when its text changes: register the widget
+   * when the line first has content, redraw it through its tui while it
+   * keeps content, remove it when the line is empty.
+   */
   function render(): void {
     if (!session) return;
     const loaded = loadLoops(session.ctx.cwd);
@@ -104,7 +112,25 @@ export function run(pi: LoopHost, deps: Deps): void {
     const text = segments?.map((s) => s.text).join(" ");
     if (text === session.status) return;
     session.status = text;
-    session.ctx.ui.setStatus(STATUS_KEY, segments && paint(segments, session.ctx.ui.theme));
+    if (!segments) {
+      session.tui = undefined;
+      session.ctx.ui.setWidget(WIDGET_KEY, undefined);
+      return;
+    }
+    session.line = segments;
+    if (session.tui) {
+      session.tui.requestRender();
+    } else {
+      const live = session;
+      live.ctx.ui.setWidget(
+        WIDGET_KEY,
+        (tui, theme) => {
+          live.tui = tui;
+          return statusWidget(() => live.line, theme);
+        },
+        { placement: "belowEditor" },
+      );
+    }
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -112,7 +138,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     session = undefined;
     // Interactive sessions only. A -p run has no UI and must not fire loops.
     if (!ctx.hasUI) return;
-    session = { ctx, stopTicker: deps.ticker(() => safely(tick)) };
+    session = { ctx, stopTicker: deps.ticker(() => safely(tick)), line: [] };
     render();
   });
 
@@ -229,7 +255,7 @@ export function run(pi: LoopHost, deps: Deps): void {
    * /loop and /loop list in a UI session: pi's built-in picker for the list;
    * Enter opens the loop's detail panel, where p pauses or resumes, x stops,
    * escape or ctrl+c goes back. Every action runs the typed command, so the
-   * state file, the notice, and the footer update the same way.
+   * state file, the notice, and the status line update the same way.
    */
   async function picker(ctx: LoopContext): Promise<void> {
     for (;;) {

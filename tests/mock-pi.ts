@@ -21,10 +21,21 @@ export interface Notice {
   type: string | undefined;
 }
 
-export interface Status {
+/** One ctx.ui.setWidget call; factory undefined is a removal. */
+export interface WidgetCall {
   key: string;
-  text: string | undefined;
+  factory: WidgetFactory | undefined;
+  placement: "aboveEditor" | "belowEditor" | undefined;
 }
+
+type WidgetFactory = Exclude<Parameters<LoopContext["ui"]["setWidget"]>[1], undefined>;
+type WidgetTheme = Parameters<WidgetFactory>[1];
+
+/** Tags instead of ANSI, so a test can see where each color lands. */
+const theme = {
+  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+  bold: (text: string) => `<b>${text}</b>`,
+};
 
 export interface OwnerFile {
   pid: number;
@@ -117,14 +128,23 @@ export class Workspace {
   }
 }
 
+/** Wide enough that no status line in these tests is cut. */
+const SCREEN_WIDTH = 200;
+
 export class Session implements LoopHost {
   readonly handlers = new Map<string, LoopHandler>();
   readonly commands = new Map<string, (args: string, ctx: LoopContext) => Promise<void>>();
   readonly transformers: MarkdownTransform[] = [];
   readonly fires: Fire[] = [];
   readonly notices: Notice[] = [];
-  /** Every setStatus call, in order; text undefined is a clear. */
-  readonly statuses: Status[] = [];
+  /** Every setWidget call, in order. */
+  readonly widgets: WidgetCall[] = [];
+  /** How many times the registered widget asked for a redraw. */
+  requestRenders = 0;
+  /** The registered widget, as pi keeps it after calling the factory. */
+  private widget: Panel | undefined;
+  /** What the screen shows: the widget's line as of its registration or its last requestRender. */
+  private screen: string | undefined;
   /** Every ctx.ui.select call: title and rows. */
   readonly selects: Array<{ title: string; options: string[] }> = [];
   /** Every ctx.ui.confirm call. */
@@ -146,11 +166,6 @@ export class Session implements LoopHost {
   ) {
     const self = this;
     this.hasUI = hasUI;
-    // Tags instead of ANSI, so a test can see where each color lands.
-    const theme = {
-      fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-      bold: (text: string) => `<b>${text}</b>`,
-    };
     this.ctx = {
       cwd: ws.cwd,
       get hasUI() {
@@ -162,8 +177,11 @@ export class Session implements LoopHost {
         notify(message: string, type?: "info" | "warning" | "error") {
           self.notices.push({ message, type });
         },
-        setStatus(key: string, text: string | undefined) {
-          self.statuses.push({ key, text });
+        setWidget(key, factory, options) {
+          self.widgets.push({ key, factory, placement: options?.placement });
+          // Like pi: the factory runs synchronously inside setWidget.
+          self.widget = factory?.({ requestRender: () => self.redraw() }, theme);
+          self.screen = self.widget?.render(SCREEN_WIDTH)[0];
         },
         async select(title: string, options: string[]) {
           self.selects.push({ title, options });
@@ -173,8 +191,7 @@ export class Session implements LoopHost {
           self.confirms.push({ title, message });
           return self.confirmImpl(title, message);
         },
-        theme,
-        custom<T>(factory: (tui: { requestRender(): void }, theme: LoopContext["ui"]["theme"], keybindings: { matches(data: string, id: "tui.select.cancel"): boolean }, done: (result: T) => void) => Panel): Promise<T> {
+        custom<T>(factory: (tui: { requestRender(): void }, theme: WidgetTheme, keybindings: { matches(data: string, id: "tui.select.cancel"): boolean }, done: (result: T) => void) => Panel): Promise<T> {
           return new Promise<T>((resolve) => {
             const panel = factory(
               { requestRender() {} },
@@ -252,14 +269,19 @@ export class Session implements LoopHost {
     this.notices.length = 0;
   }
 
-  /** The footer text as of the last setStatus call, color tags stripped; undefined when cleared or never set. */
+  private redraw(): void {
+    this.requestRenders += 1;
+    this.screen = this.widget?.render(SCREEN_WIDTH)[0];
+  }
+
+  /** The status line on screen, color tags stripped; undefined when no widget is registered. */
   status(): string | undefined {
     return this.styled()?.replace(/<\/?[a-zA-Z]+>/g, "");
   }
 
-  /** The footer text as of the last setStatus call with the mock theme's color tags. */
+  /** The status line on screen with the mock theme's color tags. */
   styled(): string | undefined {
-    return this.statuses[this.statuses.length - 1]?.text;
+    return this.screen;
   }
 }
 

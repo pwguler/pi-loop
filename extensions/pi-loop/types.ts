@@ -17,8 +17,12 @@ export interface LoopContext {
   isIdle(): boolean;
   ui: {
     notify(message: string, type?: "info" | "warning" | "error"): void;
-    setStatus(key: string, text: string | undefined): void;
-    theme: Pick<Theme, "fg" | "bold">;
+    /** A component widget; undefined removes it. pi calls the factory synchronously. */
+    setWidget(
+      key: string,
+      factory: ((tui: { requestRender(): void }, theme: Pick<Theme, "fg" | "bold">) => Panel) | undefined,
+      options?: { placement?: "aboveEditor" | "belowEditor" },
+    ): void;
     select(title: string, options: string[]): Promise<string | undefined>;
     confirm(title: string, message: string): Promise<boolean>;
     custom<T>(
