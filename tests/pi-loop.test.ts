@@ -1657,6 +1657,28 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     }
   });
 
+  test("a redraw that throws after the panel closes is logged, never left unhandled, and the roster works again", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    };
+    try {
+      panel(s, ["p"]);
+      s.press(DOWN);
+      s.failNextRender = new Error("render boom");
+      s.press(ENTER);
+      await s.flush();
+      expect(ws.loops()[0]?.paused).toBe(true);
+      expect(errors).toEqual(["pi-loop: render boom"]);
+      expect(s.press(ENTER)).toBe(true);
+    } finally {
+      console.error = original;
+    }
+  });
+
   test("a panel that outlives its session acts on nothing and draws nothing: shutdown, or a new session start", async () => {
     const s = ws.startSession();
     await s.command("5m ping");

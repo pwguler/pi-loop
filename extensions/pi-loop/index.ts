@@ -246,7 +246,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       .catch((e: unknown) => console.error(`pi-loop: ${message(e)}`))
       .finally(() => {
         live.panelOpen = false;
-        render();
+        safely(render);
       });
   }
 

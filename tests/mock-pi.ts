@@ -153,6 +153,8 @@ export class Session implements LoopHost {
   readonly widgets: WidgetCall[] = [];
   /** How many times the registered widget asked for a redraw. */
   requestRenders = 0;
+  /** When set, the next requestRender throws it, once. */
+  failNextRender: Error | undefined;
   /** The registered widget, as pi keeps it after calling the factory. */
   private widget: Panel | undefined;
   /** What the screen shows: the widget's lines as of its registration or its last requestRender. */
@@ -322,6 +324,9 @@ export class Session implements LoopHost {
   }
 
   private redraw(): void {
+    const failure = this.failNextRender;
+    this.failNextRender = undefined;
+    if (failure) throw failure;
     this.requestRenders += 1;
     this.screen = this.widget?.render(SCREEN_WIDTH);
   }
