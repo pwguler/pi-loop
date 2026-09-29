@@ -57,7 +57,11 @@ export type MarkdownTransform = (
 ) => string;
 
 export interface LoopHost {
-  on(event: "session_start" | "session_shutdown" | "agent_settled", handler: LoopHandler): void;
+  // One overload per event, not one over their union: a union parameter compares bivariantly, so a
+  // host missing one event would still fit. Each overload needs its own match in pi's ExtensionAPI.
+  on(event: "session_start", handler: LoopHandler): void;
+  on(event: "session_shutdown", handler: LoopHandler): void;
+  on(event: "agent_settled", handler: LoopHandler): void;
   registerCommand(
     name: string,
     options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> },
