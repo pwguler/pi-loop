@@ -68,6 +68,7 @@ export interface LoopHost {
   // host missing one event would still fit. Each overload needs its own match in pi's ExtensionAPI.
   on(event: "session_start", handler: LoopHandler): void;
   on(event: "session_shutdown", handler: LoopHandler): void;
+  on(event: "agent_start", handler: LoopHandler): void;
   on(event: "agent_settled", handler: LoopHandler): void;
   registerCommand(
     name: string,
@@ -75,7 +76,7 @@ export interface LoopHost {
   ): void;
   /** Display-only: pi renders the returned Markdown; the stored message and model context are untouched. */
   registerMarkdownTransformer(transformer: MarkdownTransform): void;
-  sendUserMessage(text: string): void;
+  sendUserMessage(text: string, options?: { deliverAs?: "steer" | "followUp" }): void;
 }
 
 /** Time and process seams, injected so tests drive them. */

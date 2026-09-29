@@ -9,6 +9,7 @@ import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { defaultName, parseCommand } from "./command.ts";
 import { formatInterval } from "./interval.ts";
 import { chooseName, NAMING_TIMEOUT_MS, namingNote, uniqueName, type Chosen } from "./naming.ts";
+import { nextGridPoint } from "./schedule.ts";
 import { claimOwner, loadLoops, message, otherOwner, readPrompt, releaseOwner, saveLoops } from "./state.ts";
 import type { Deps, Loop, LoopContext, LoopHost, WidgetTui } from "./types.ts";
 import {
@@ -18,7 +19,6 @@ import {
   formatLocal,
   lineText,
   rosterLines,
-  spaced,
   statusLine,
   statusWidget,
   type Line,
@@ -31,6 +31,8 @@ export type { Deps, Loop, LoopContext, LoopHandler, LoopHost, MarkdownTransform,
 const WIDGET_KEY = "pi-loop";
 /** How long the status line says `fired <name> #<n>` after a fire. */
 const PULSE_MS = 5000;
+/** How long after a send made while idle the run's agent_start is awaited before another fire may go out. */
+const STARTING_GRACE_MS = 10_000;
 
 /** What one fireDue did: nothing, a state-file error, or a fire. */
 type FireOutcome = { fired?: { name: string; fires: number }; error?: string };
@@ -56,6 +58,14 @@ interface Session {
   unsubscribe?: () => void;
   /** The registered widget's tui, through which every later change is redrawn; undefined while no widget is registered. */
   tui?: WidgetTui;
+  /** A run is active: set on agent_start, cleared on agent_settled. False during compaction and branch summary. */
+  running: boolean;
+  /** Until this instant, a send made while idle is awaiting its agent_start; set after such a send. */
+  starting?: number;
+  /** Names of the loops with a waiting fire: sent while a run was active, marked until the agent settles; a loop keeps at most one. */
+  waiting: Set<string>;
+  /** This session holds the cwd's loops: set on the first tick whose claim succeeds, cleared by a tick whose claim fails. */
+  owning?: boolean;
   /** The last fire, shown in the status line until `until`. */
   pulse?: { name: string; fires: number; until: number };
 }
@@ -69,15 +79,24 @@ export function run(pi: LoopHost, deps: Deps): void {
   let session: Session | undefined;
 
   /**
-   * Fire the first due loop if the session is idle. A state-file error is
-   * returned; a fire that skips records its error on the loop instead.
+   * Fire the due loop with the earliest due time, one per call, when pi will
+   * accept the message: at once when idle, queued behind the run when a run is
+   * active. A loop keeps at most one waiting fire: from a send made behind a
+   * run until the agent settles, its grid points are skipped. During compaction
+   * or a branch summary, or while a send made when
+   * idle has not yet started its run, nothing is sent and the loop stays due.
+   * A state-file error is returned; a fire that skips records its error on the
+   * loop instead.
    */
   function fireDue(ctx: LoopContext): FireOutcome {
     const loaded = loadLoops(ctx.cwd);
     if (!loaded.ok) return { error: loaded.error };
     let loops = loaded.value;
     if (loops.length === 0) return {};
-    if (!claimOwner(ctx, deps)) return {};
+    if (!claimOwner(ctx, deps)) {
+      if (session) session.owning = false;
+      return {};
+    }
     const now = deps.now();
 
     // A loop past its --until is removed before any fire, even one due now.
@@ -86,14 +105,50 @@ export function run(pi: LoopHost, deps: Deps): void {
       loops = loops.filter((l) => !expired.includes(l));
       saveLoops(ctx.cwd, loops);
       for (const l of expired) {
+        session?.waiting.delete(l.name);
         if (l.until !== undefined) ctx.ui.notify(`${l.name} reached until ${formatLocal(l.until)}, removed`, "info");
       }
     }
 
-    if (!ctx.isIdle()) return {};
-    const due = loops.find((l) => !l.paused && l.dueAt <= now);
+    // Taking the loops over: what came due while no session held them is skipped, never caught up.
+    // A loop that has not fired yet still owes its creation fire and is left alone, as is a paused one.
+    if (session && !session.owning) {
+      session.owning = true;
+      let changed = false;
+      for (const l of loops) {
+        if (l.paused || l.fires === 0) continue;
+        const next = nextGridPoint(l.intervalMs, now);
+        if (l.dueAt !== next) {
+          l.dueAt = next;
+          changed = true;
+        }
+      }
+      if (changed) saveLoops(ctx.cwd, loops);
+    }
+
+    if (!loops.some((l) => !l.paused && l.dueAt <= now)) return {};
+    const idle = ctx.isIdle();
+    if (session && session.starting !== undefined && session.starting <= now) session.starting = undefined;
+    // Not idle and no run of ours: compaction, a branch summary, or unknown. pi would reject the send.
+    if (!idle && !session?.running) return {};
+    if (idle && session?.starting !== undefined) return {};
+    const busy = !idle;
+
+    // Busy: a due loop whose previous fire still waits skips this grid point, and the tick's send goes to another.
+    if (busy && session) {
+      let skipped = false;
+      for (const l of loops) {
+        if (l.paused || l.dueAt > now || !session.waiting.has(l.name)) continue;
+        l.dueAt = nextGridPoint(l.intervalMs, now);
+        skipped = true;
+      }
+      if (skipped) saveLoops(ctx.cwd, loops);
+    }
+
+    let due: Loop | undefined;
+    for (const l of loops) if (!l.paused && l.dueAt <= now && (!due || l.dueAt < due.dueAt)) due = l;
     if (!due) return {};
-    due.dueAt = now + due.intervalMs;
+    due.dueAt = nextGridPoint(due.intervalMs, now);
     const prompt = readPrompt(ctx.cwd, due.prompt);
     if (!prompt.ok) {
       due.lastError = prompt.error;
@@ -105,7 +160,10 @@ export function run(pi: LoopHost, deps: Deps): void {
     const done = due.max !== undefined && due.fires >= due.max;
     // Save before send: a crash between the two loses one fire, never doubles it.
     saveLoops(ctx.cwd, done ? loops.filter((l) => l !== due) : loops);
-    pi.sendUserMessage(`[loop ${due.name} #${due.fires} ${formatLocal(now)}]\n${prompt.value}`);
+    // followUp: queued behind a run; ignored when idle, and if a run starts meanwhile pi queues instead of rejecting.
+    pi.sendUserMessage(`[loop ${due.name} #${due.fires} ${formatLocal(now)}]\n${prompt.value}`, { deliverAs: "followUp" });
+    if (idle && session) session.starting = now + STARTING_GRACE_MS;
+    if (busy && session && !done) session.waiting.add(due.name);
     if (done) ctx.ui.notify(`${due.name} reached max ${due.fires}, removed`, "info");
     return { fired: { name: due.name, fires: due.fires } };
   }
@@ -113,6 +171,11 @@ export function run(pi: LoopHost, deps: Deps): void {
   /** One tick: fire what is due, notify a state-file error once until it changes, redraw the status line. */
   function tick(): void {
     if (!session) return;
+    // pi is idle only while no run is active, so a run that ended without agent_settled cannot leave `running` set.
+    if (session.ctx.isIdle()) {
+      session.running = false;
+      session.waiting.clear();
+    }
     const outcome = fireDue(session.ctx);
     if (outcome.error !== session.reported) {
       session.reported = outcome.error;
@@ -160,7 +223,7 @@ export function run(pi: LoopHost, deps: Deps): void {
         ? []
         : live.roster
           ? rosterLines(live.loops, live.owner, live.roster.index)
-          : [spaced(live.segments)];
+          : [live.segments];
     const text = lines?.map(lineText).join("\n");
     if (text === live.status) return;
     live.status = text;
@@ -185,7 +248,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   }
 
   /**
-   * A terminal key, before the editor sees it. Collapsed, ↓ or ← on an empty,
+   * A terminal key, before the editor sees it. Collapsed, → on an empty,
    * focused editor with loops present opens the roster; every other key passes.
    * Open: ↓/j and ↑/k move, ↑/k on the first row and Esc collapse, and any other
    * key collapses and passes through; Enter opens the selected loop's panel,
@@ -196,7 +259,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     if (isKeyRelease(data) || live.panelOpen) return undefined;
     const roster = live.roster;
     if (!roster) {
-      if (!matchesKey(data, "down") && !matchesKey(data, "left")) return undefined;
+      if (!matchesKey(data, "right")) return undefined;
       const first = live.loops[0];
       if (!first || live.ctx.ui.getEditorText() !== "" || !editorHasFocus(live.tui)) return undefined;
       live.roster = { selected: first.name, index: 0 };
@@ -264,13 +327,24 @@ export function run(pi: LoopHost, deps: Deps): void {
     // Print, json, and RPC get no session whatever their hasUI (RPC has one), so a pi-subagents child
     // never fires; their /loop commands still write the state file for the TUI owner to fire.
     if (ctx.mode !== "tui") return;
-    const live: Session = { ctx, stopTicker: deps.ticker(() => safely(tick)), lines: [], loops: [] };
+    const live: Session = { ctx, stopTicker: deps.ticker(() => safely(tick)), lines: [], loops: [], running: false, waiting: new Set() };
     session = live;
     live.unsubscribe = ctx.ui.onTerminalInput((data) => onKey(live, data));
     render();
   });
 
+  pi.on("agent_start", () => {
+    if (!session) return;
+    session.running = true;
+    session.starting = undefined;
+  });
+
   pi.on("agent_settled", () => {
+    if (session) {
+      session.running = false;
+      session.starting = undefined;
+      session.waiting.clear();
+    }
     tick();
   });
 
@@ -283,7 +357,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   });
 
   // A fire is stored as the plain bracket header plus the prompt (AC-1). On
-  // screen only the header shows, as a heading; the prompt is the loop's own
+  // screen only the header shows, as a plain line; the prompt is the loop's own
   // text and repeating it every fire is noise.
   pi.registerMarkdownTransformer((markdown, { messageType }) => {
     if (messageType !== "user") return markdown;
@@ -336,6 +410,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       }
       if (cmd.kind === "stop") {
         saveLoops(ctx.cwd, loops.filter((l) => l !== loop));
+        session?.waiting.delete(loop.name);
         if (session?.pulse?.name === loop.name) session.pulse = undefined;
         ctx.ui.notify(`stopped ${loop.name}`, "info");
         return;
@@ -355,7 +430,7 @@ export function run(pi: LoopHost, deps: Deps): void {
         return;
       }
       loop.paused = false;
-      loop.dueAt = now + loop.intervalMs;
+      loop.dueAt = nextGridPoint(loop.intervalMs, now);
       saveLoops(ctx.cwd, loops);
       ctx.ui.notify(`resumed ${loop.name}, next ${formatLocal(loop.dueAt)}`, "info");
       return;

@@ -14,23 +14,21 @@ export interface Segment {
   text: string;
   /** No color: drawn in the default text color, with no theme call. */
   color?: Color;
-  bold?: boolean;
 }
 
 /** One widget line: its segments drawn side by side. */
 export type Line = Segment[];
 
-const SEP: Segment = { text: "\u00b7", color: "dim" };
-
-const HINT: Segment = { text: "\u2193/\u2190 to manage", color: "dim" };
+const HINT = "\u2192 to manage";
 
 /**
- * The status line as colored segments, or undefined when there is no line.
- * The count carries the state color; there is no glyph.
- * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · ↓/← to manage
- * Paused:    1 paused loop · ↓/← to manage
- * Non-owner: 2 loops · owned by pid 4242 · ↓/← to manage
- * No loops, just fired: fired fast #3
+ * The status line as segments, or undefined when there is no line: a muted
+ * label, a plain " · " joiner, and one dim detail that carries its own
+ * separators and the hint; no glyph, nothing bold.
+ * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · → to manage
+ * Paused:    1 paused loop · → to manage
+ * Non-owner: 2 loops · owned by pid 4242 · → to manage
+ * No loops, just fired: fired fast #3 (the label alone)
  */
 export function statusLine(
   loops: Loop[],
@@ -41,16 +39,10 @@ export function statusLine(
 ): Segment[] | undefined {
   if (loops.length === 0) {
     if (!pulse) return undefined;
-    return [{ text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true }];
+    return [{ text: `fired ${pulse.name} #${pulse.fires}`, color: "muted" }];
   }
   if (owner !== undefined) {
-    return [
-      { text: plural(loops.length, "loop"), color: "muted" },
-      SEP,
-      { text: `owned by pid ${owner}`, color: "muted" },
-      SEP,
-      HINT,
-    ];
+    return line(plural(loops.length, "loop"), [`owned by pid ${owner}`, HINT]);
   }
   const active = loops.filter((l) => !l.paused);
   const paused = loops.length - active.length;
@@ -63,29 +55,20 @@ export function statusLine(
       ? plural(paused, "paused loop")
       : `${plural(active.length, "active loop")}${paused > 0 ? `, ${paused} paused` : ""}`;
 
-  const out: Segment[] = [];
-  if (pulse) {
-    out.push({ text: count, color: "accent" }, SEP, { text: `fired ${pulse.name} #${pulse.fires}`, color: "accent", bold: true });
-  } else if (next === undefined) {
-    out.push({ text: count, color: "dim" });
-  } else if (due) {
-    out.push({ text: count, color: "warning" }, SEP, { text: `due ${next.name}`, color: "warning" });
-  } else {
-    out.push({ text: count, color: "success" }, SEP);
-    out.push({ text: "next", color: "muted" }, { text: next.name, color: "accent" }, { text: formatLocal(next.dueAt).slice(11), color: "dim" });
-  }
-  if (errors > 0) out.push(SEP, { text: plural(errors, "error"), color: "error" });
-  out.push(SEP, HINT);
-  return out;
+  const parts: string[] = [];
+  if (pulse) parts.push(`fired ${pulse.name} #${pulse.fires}`);
+  else if (next !== undefined) parts.push(due ? `due ${next.name}` : `next ${next.name} ${formatLocal(next.dueAt).slice(11)}`);
+  if (errors > 0) parts.push(plural(errors, "error"));
+  parts.push(HINT);
+  return line(count, parts);
+}
+
+function line(label: string, detail: string[]): Segment[] {
+  return [{ text: label, color: "muted" }, { text: " \u00b7 " }, { text: detail.join(" \u00b7 "), color: "dim" }];
 }
 
 function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
-
-/** The status line's segments as one line, a plain space between each. */
-export function spaced(segments: Segment[]): Line {
-  return segments.flatMap((s, i) => (i === 0 ? [s] : [{ text: " " }, s]));
 }
 
 /** A line's text without color: what change detection compares. */
@@ -93,18 +76,14 @@ export function lineText(line: Line): string {
   return line.map((s) => s.text).join("");
 }
 
-function paint(line: Line, theme: Pick<Theme, "fg" | "bold">): string {
+function paint(line: Line, theme: Pick<Theme, "fg">): string {
   return line
-    .map((s) => {
-      if (s.color === undefined) return s.text;
-      const colored = theme.fg(s.color, s.text);
-      return s.bold ? theme.bold(colored) : colored;
-    })
+    .map((s) => (s.color === undefined ? s.text : theme.fg(s.color, s.text)))
     .join("");
 }
 
 /** The widget below the editor: the status line or the roster, each line indented two spaces and cut to the width it is given. */
-export function statusWidget(lines: () => Line[], theme: Pick<Theme, "fg" | "bold">): Panel {
+export function statusWidget(lines: () => Line[], theme: Pick<Theme, "fg">): Panel {
   return {
     render(width) {
       return lines().map((line) => truncateToWidth(`  ${paint(line, theme)}`, width));
@@ -231,10 +210,10 @@ export function detailPanel(
 const FIRE_MESSAGE = /^\[loop ([A-Za-z0-9][A-Za-z0-9._-]*) #(\d+) (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\n[\s\S]*$/;
 
 /**
- * How a fire is drawn in the transcript: the header line as a level-2 heading
- * (pi draws it in the heading color with no marker), the prompt not repeated.
+ * How a fire is drawn in the transcript: the header line as a plain line
+ * (no heading markup, so no heading color), the prompt not repeated.
  * Display only; the stored message and what the model sees are unchanged.
  */
 export function displayFire(markdown: string): string {
-  return markdown.replace(FIRE_MESSAGE, "## $1 #$2 \u00b7 $3");
+  return markdown.replace(FIRE_MESSAGE, "$1 #$2 \u00b7 $3");
 }

@@ -245,7 +245,16 @@ export class Session implements LoopHost {
   /** Scripted answer of the model to every call. */
   modelAnswer: ModelAnswer = { text: "unscripted" };
   readonly ctx: LoopContext;
+  /** pi's isIdle: no run active and no compaction or summary in progress. */
   idle = true;
+  /** A run is active (between agent_start and agent_settled); false during compaction. */
+  running = false;
+  /**
+   * A send made while idle makes pi emit agent_start shortly after, as pi's
+   * async prompt does; idle itself stays true, so a test's later sends keep
+   * their meaning. A test of the wait for agent_start turns this off and calls startRun.
+   */
+  autoStart = true;
   hasUI: boolean;
   mode: LoopContext["mode"];
 
@@ -330,7 +339,7 @@ export class Session implements LoopHost {
     run(this, ws.deps(pid));
   }
 
-  on(event: "session_start" | "session_shutdown" | "agent_settled", handler: LoopHandler): void {
+  on(event: "session_start" | "session_shutdown" | "agent_start" | "agent_settled", handler: LoopHandler): void {
     this.handlers.set(event, handler);
   }
 
@@ -347,9 +356,12 @@ export class Session implements LoopHost {
     return this.transformers.reduce((md, t) => t(md, { messageType, isStreaming: false, availableWidth: 80 }), markdown);
   }
 
-  sendUserMessage(text: string, options?: unknown): void {
-    if (!this.idle) throw new Error("sendUserMessage while streaming without deliverAs");
+  /** Throws where pi rejects: during compaction always, and while streaming without deliverAs. */
+  sendUserMessage(text: string, options?: { deliverAs?: "steer" | "followUp" }): void {
+    if (!this.idle && !this.running) throw new Error("Cannot submit a prompt while compaction is in progress");
+    if (!this.idle && !options?.deliverAs) throw new Error("sendUserMessage while streaming without deliverAs");
     this.fires.push({ text, options });
+    if (this.idle && this.autoStart) queueMicrotask(() => this.emit("agent_start"));
   }
 
   /** Emit an event to the registered handler; a missing handler is a no-op. */
@@ -364,9 +376,28 @@ export class Session implements LoopHost {
     await h(args, this.ctx);
   }
 
-  /** The agent finished a run: idle again, agent_settled fires. */
+  /** A run is active: not idle, agent_start fires. */
+  busy(): void {
+    this.idle = false;
+    this.running = true;
+    this.emit("agent_start");
+  }
+
+  /** A send made while idle starts its run: agent_start fires after the send, as in pi. */
+  startRun(): void {
+    this.busy();
+  }
+
+  /** A compaction or branch summary runs: not idle, no run active. */
+  compacting(): void {
+    this.idle = false;
+    this.running = false;
+  }
+
+  /** The agent finished a run, or a compaction ended: idle again, agent_settled fires. */
   settle(): void {
     this.idle = true;
+    this.running = false;
     this.emit("agent_settled");
   }
 
