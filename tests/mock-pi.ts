@@ -316,6 +316,11 @@ export class Session implements LoopHost {
     return false;
   }
 
+  /** Let pending promise chains finish, such as a panel flow started by a key: resolves on the next macrotask. */
+  async flush(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
   private redraw(): void {
     this.requestRenders += 1;
     this.screen = this.widget?.render(SCREEN_WIDTH);

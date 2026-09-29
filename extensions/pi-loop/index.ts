@@ -48,8 +48,10 @@ interface Session {
   loops: Loop[];
   owner?: number;
   segments?: Segment[];
-  /** The open roster and its selected loop, by name; undefined while collapsed to the status line. */
-  roster?: { selected: string };
+  /** The open roster and its selected loop, by name and last known row; undefined while collapsed to the status line. */
+  roster?: { selected: string; index: number };
+  /** A loop's detail panel, opened from the roster, has focus; keys are its own until it closes. */
+  panelOpen?: boolean;
   /** Removes the terminal input listener; set in TUI mode only. */
   unsubscribe?: () => void;
   /** The registered widget's tui, through which every later change is redrawn; undefined while no widget is registered. */
@@ -138,17 +140,22 @@ export function run(pi: LoopHost, deps: Deps): void {
    * render's cache, only when the text changes: register the widget when it
    * first has content, redraw it through its tui while it keeps content,
    * remove it when there is nothing to show. The roster closes when no loops
-   * remain; a selected loop that is gone falls back to the first row.
+   * remain; a selected loop that is gone gives way to the row now at its
+   * index, or the last row.
    */
   function draw(live: Session): void {
-    const first = live.loops[0];
-    if (!first) live.roster = undefined;
-    else if (live.roster && !live.loops.some((l) => l.name === live.roster?.selected)) live.roster.selected = first.name;
     const roster = live.roster;
+    if (roster) {
+      const at = live.loops.findIndex((l) => l.name === roster.selected);
+      roster.index = at >= 0 ? at : Math.min(roster.index, live.loops.length - 1);
+      const selected = live.loops[roster.index];
+      if (selected) roster.selected = selected.name;
+      else live.roster = undefined;
+    }
     const lines = !live.segments
       ? undefined
-      : roster
-        ? rosterLines(live.loops, live.owner, live.loops.findIndex((l) => l.name === roster.selected))
+      : live.roster
+        ? rosterLines(live.loops, live.owner, live.roster.index)
         : [spaced(live.segments)];
     const text = lines?.map(lineText).join("\n");
     if (text === live.status) return;
@@ -177,17 +184,18 @@ export function run(pi: LoopHost, deps: Deps): void {
    * A terminal key, before the editor sees it. Collapsed, ↓ or ← on an empty,
    * focused editor with loops present opens the roster; every other key passes.
    * Open: ↓/j and ↑/k move, ↑/k on the first row and Esc collapse, and any other
-   * key collapses and passes through. The cheap checks come first; nothing here
-   * reads the state file.
+   * key collapses and passes through; Enter opens the selected loop's panel,
+   * and while it is open every key is the panel's. The cheap checks come first;
+   * nothing here reads the state file.
    */
   function onKey(live: Session, data: string): { consume: true } | undefined {
-    if (isKeyRelease(data)) return undefined;
+    if (isKeyRelease(data) || live.panelOpen) return undefined;
     const roster = live.roster;
     if (!roster) {
       if (!matchesKey(data, "down") && !matchesKey(data, "left")) return undefined;
       const first = live.loops[0];
       if (!first || live.ctx.ui.getEditorText() !== "" || !editorHasFocus(live.tui)) return undefined;
-      live.roster = { selected: first.name };
+      live.roster = { selected: first.name, index: 0 };
       draw(live);
       return { consume: true };
     }
@@ -199,7 +207,12 @@ export function run(pi: LoopHost, deps: Deps): void {
       collapse();
       return undefined;
     }
-    const i = Math.max(0, live.loops.findIndex((l) => l.name === roster.selected));
+    const i = roster.index;
+    const loop = live.loops[i];
+    if (matchesKey(data, "enter") && loop) {
+      openPanel(live, loop);
+      return { consume: true };
+    }
     if (matchesKey(data, "down") || matchesKey(data, "j")) {
       roster.selected = live.loops[Math.min(i + 1, live.loops.length - 1)]?.name ?? roster.selected;
       draw(live);
@@ -219,6 +232,22 @@ export function run(pi: LoopHost, deps: Deps): void {
     }
     collapse();
     return undefined;
+  }
+
+  /**
+   * Open a loop's panel from the roster without waiting for it: keys pass to the
+   * panel until it closes, then the roster is drawn again from the state file.
+   * A session that ended meanwhile is left alone, since render draws only the
+   * current one; a failure is logged.
+   */
+  function openPanel(live: Session, loop: Loop): void {
+    live.panelOpen = true;
+    detail(live.ctx, loop, live.owner, () => session === live)
+      .catch((e: unknown) => console.error(`pi-loop: ${message(e)}`))
+      .finally(() => {
+        live.panelOpen = false;
+        render();
+      });
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -364,14 +393,23 @@ export function run(pi: LoopHost, deps: Deps): void {
       const picked = await ctx.ui.select("loops", rows.length === 0 ? ["no loops"] : rows);
       const loop = picked === undefined ? undefined : loops[rows.indexOf(picked)];
       if (!loop) return;
+      await detail(ctx, loop, owner, () => true);
+    }
+  }
 
-      const action = await ctx.ui.custom<PanelAction>((_tui, theme, keybindings, done) => detailPanel(loop, owner, theme, keybindings, done));
-      if (action === "pause" || action === "resume") {
-        await handle(`${action} ${loop.name}`, ctx);
-      } else if (action === "stop") {
-        const yes = await ctx.ui.confirm(`Stop ${loop.name}?`, "The loop is removed. Its fires so far stay in the transcript.");
-        if (yes) await handle(`stop ${loop.name}`, ctx);
-      }
+  /**
+   * A loop's detail panel: p pauses or resumes, x asks and stops, escape or
+   * ctrl+c goes back. Each action runs the typed command, only while `current`
+   * still holds after the wait for the user.
+   */
+  async function detail(ctx: LoopContext, loop: Loop, owner: number | undefined, current: () => boolean): Promise<void> {
+    const action = await ctx.ui.custom<PanelAction>((_tui, theme, keybindings, done) => detailPanel(loop, owner, theme, keybindings, done));
+    if (!current()) return;
+    if (action === "pause" || action === "resume") {
+      await handle(`${action} ${loop.name}`, ctx);
+    } else if (action === "stop") {
+      const yes = await ctx.ui.confirm(`Stop ${loop.name}?`, "The loop is removed. Its fires so far stay in the transcript.");
+      if (yes && current()) await handle(`stop ${loop.name}`, ctx);
     }
   }
 }

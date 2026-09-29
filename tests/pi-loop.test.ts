@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type { Panel } from "../extensions/pi-loop/index.ts";
 import { dialogComponent, editorComponent, Workspace, type Session } from "./mock-pi.ts";
 
 // A fixed instant in local time so header and list output are asserted
@@ -1437,16 +1438,16 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
     expect(selected(s)).toBe("a");
   });
 
-  test("any other key collapses and reaches the editor unchanged: h is typed, Enter submits", async () => {
+  test("any other key collapses and reaches the editor unchanged: h is typed, tab passes", async () => {
     const s = await three();
     const line = s.status();
     s.press(DOWN);
     expect(s.press("h")).toBe(false);
     expect(s.status()).toBe(line);
     s.press(DOWN);
-    expect(s.press(ENTER)).toBe(false);
+    expect(s.press("\t")).toBe(false);
     expect(s.status()).toBe(line);
-    expect(s.editorKeys).toEqual(["h", ENTER]);
+    expect(s.editorKeys).toEqual(["h", "\t"]);
   });
 
   test("a key arriving while the editor has lost focus collapses the roster and passes through", async () => {
@@ -1482,6 +1483,368 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
     }
     expect(s.status()).toBe(open);
     expect(s.requestRenders).toBe(renders);
+  });
+});
+
+/** The name on the roster's selected row; undefined while the roster is closed. */
+function selectedName(s: Session): string | undefined {
+  return (s.status() ?? "").split("\n").find((l) => l.startsWith("  › "))?.slice(4).split(" ")[0];
+}
+
+/** Hold every panel open instead of answering it: press its keys later, count how many opened. */
+function hold(s: Session): { key(data: string): void; opened(): number } {
+  const held: Panel[] = [];
+  s.customImpl = (p) => {
+    held.push(p);
+  };
+  return {
+    key: (data) => held[held.length - 1]?.handleInput?.(data),
+    opened: () => held.length,
+  };
+}
+
+const STOP_MESSAGE = "The loop is removed. Its fires so far stay in the transcript.";
+
+describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () => {
+  test("border, blank, name, blank, fields, blank, hint, blank, border; text and @path prompts; consumed; back on the same row", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("p.md"), "x");
+    await s.command("5m --name first ping");
+    await s.command("2h --name nightly --max 10 --until 23:30 @p.md");
+    const seen = panel(s, [ESC, ESC]);
+    s.press(DOWN);
+    expect(s.press(ENTER)).toBe(true);
+    await s.flush();
+    expect(selectedName(s)).toBe("first");
+    s.press("j");
+    expect(s.press(ENTER)).toBe(true);
+    await s.flush();
+    expect(seen).toEqual([
+      [
+        "─".repeat(60),
+        "",
+        " first",
+        "",
+        " interval   5m",
+        " prompt     ping",
+        " next       2026-09-06 10:05",
+        " fires      1",
+        " status     active",
+        "",
+        " p pause  x stop  escape/ctrl+c back",
+        "",
+        "─".repeat(60),
+      ],
+      [
+        "─".repeat(60),
+        "",
+        " nightly",
+        "",
+        " interval   2h",
+        " prompt     @p.md",
+        " next       2026-09-06 12:00",
+        " fires      1",
+        " status     active",
+        " max        10",
+        " until      2026-09-06 23:30",
+        "",
+        " p pause  x stop  escape/ctrl+c back",
+        "",
+        "─".repeat(60),
+      ],
+    ]);
+    expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER);
+    expect(selectedName(s)).toBe("nightly");
+    expect(s.editorKeys).toEqual([]);
+  });
+
+  test("hint keys dim and descriptions muted; a paused loop says p resume; an error shows", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("p.md"), "x");
+    await s.command("5m @p.md");
+    fs.rmSync(ws.file("p.md"));
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    await s.command("pause loop-1");
+    let styled: string[] = [];
+    s.customImpl = (p) => {
+      styled = p.render(60);
+      p.handleInput?.("\x03");
+    };
+    s.press(DOWN);
+    s.press(ENTER);
+    await s.flush();
+    expect(styled[0]).toBe(`<border>${"─".repeat(60)}</border>`);
+    expect(styled[2]).toBe(" <accent><b>loop-1</b></accent>");
+    expect(styled.find((l) => l.includes("status"))).toBe(" <muted>status    </muted> paused");
+    expect(styled.find((l) => l.includes("error"))).toMatch(/^ <muted>error     <\/muted> prompt file p\.md: .*ENOENT/);
+    expect(styled.find((l) => l.includes("resume"))).toBe(
+      " <dim>p</dim><muted> resume</muted>  <dim>x</dim><muted> stop</muted>  <dim>escape/ctrl+c</dim><muted> back</muted>",
+    );
+    expect(styled[styled.length - 1]).toBe(`<border>${"─".repeat(60)}</border>`);
+  });
+
+  test("while the panel is open every key passes, the roster stays open through focus loss and ticks, and a second Enter opens nothing", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("1h --name b y");
+    await s.command("1h --name c z");
+    const p = hold(s);
+    s.press(DOWN);
+    s.press("j");
+    expect(s.press(ENTER)).toBe(true);
+    expect(p.opened()).toBe(1);
+    const open = s.status();
+    s.focused = dialogComponent();
+    for (const key of [ENTER, DOWN, "j", ESC, "h"]) expect(s.press(key)).toBe(false);
+    ws.clock.advance(1000);
+    ws.tick();
+    expect(p.opened()).toBe(1);
+    expect(s.status()).toBe(open);
+    p.key(ESC);
+    s.focused = editorComponent();
+    await s.flush();
+    expect(s.status()).toBe(open);
+    expect(selectedName(s)).toBe("b");
+    expect(s.press("j")).toBe(true);
+    expect(selectedName(s)).toBe("c");
+  });
+
+  test("when the loop is gone by the time the panel closes, the row now at its index is selected, or the last row", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("1h --name b y");
+    await s.command("1h --name c z");
+    const p = hold(s);
+    s.press(DOWN);
+    s.press("j");
+    s.press(ENTER);
+    await s.command("stop b");
+    p.key(ESC);
+    await s.flush();
+    expect(selectedName(s)).toBe("c");
+    s.press(ENTER);
+    await s.command("stop c");
+    p.key(ESC);
+    await s.flush();
+    expect(selectedName(s)).toBe("a");
+  });
+
+  test("a failing panel flow is logged, never left unhandled, and the roster works again", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    };
+    try {
+      s.confirmImpl = () => {
+        throw new Error("boom");
+      };
+      const seen = panel(s, ["x", ESC]);
+      s.press(DOWN);
+      s.press(ENTER);
+      await s.flush();
+      expect(errors).toEqual(["pi-loop: boom"]);
+      expect(selectedName(s)).toBe("loop-1");
+      expect(s.press(ENTER)).toBe(true);
+      await s.flush();
+      expect(seen).toHaveLength(2);
+      expect(ws.loops()).toHaveLength(1);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test("a panel that outlives its session acts on nothing and draws nothing: shutdown, or a new session start", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const p = hold(s);
+    s.press(DOWN);
+    s.press(ENTER);
+    s.shutdown();
+    const widgets = s.widgets.length;
+    s.clearNotices();
+    p.key("p");
+    await s.flush();
+    expect(ws.loops()[0]?.paused).toBe(false);
+    expect(s.notices).toEqual([]);
+    expect(s.widgets).toHaveLength(widgets);
+
+    const t = ws.startSession();
+    t.confirmImpl = () => {
+      t.emit("session_start");
+      return true;
+    };
+    const q = hold(t);
+    t.press(DOWN);
+    t.press(ENTER);
+    q.key("x");
+    await t.flush();
+    expect(t.confirms).toHaveLength(1);
+    expect(ws.loops()).toHaveLength(1);
+    expect(t.notices.map((n) => n.message)).not.toContain("stopped loop-1");
+  });
+});
+
+describe("AC-R5 p on the panel pauses or resumes and returns to the roster", () => {
+  test("applies at once, prints the typed command's notice, and the roster shows the new status on the same row", async () => {
+    const s = ws.startSession();
+    await s.command("5m --name a ping");
+    await s.command("1h --name b pong");
+    ws.clock.advance(5000);
+    ws.tick();
+    s.clearNotices();
+    const seen = panel(s, ["p", "p"]);
+    s.press(DOWN);
+    s.press("j");
+    s.press(ENTER);
+    await s.flush();
+    expect(s.notices.map((n) => n.message)).toEqual(["paused b"]);
+    expect(ws.loops()[1]?.paused).toBe(true);
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`);
+    s.press(ENTER);
+    await s.flush();
+    expect(s.notices.map((n) => n.message)).toEqual(["paused b", "resumed b, next 2026-09-06 11:00"]);
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #1`);
+    expect(seen.map((lines) => lines.find((l) => l.startsWith(" p ")))).toEqual([" p pause  x stop  escape/ctrl+c back", " p resume  x stop  escape/ctrl+c back"]);
+  });
+
+  test("the action goes to the panel's loop by name after the rows shift, and a loop gone meanwhile gets the typed command's error", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("1h --name b y");
+    await s.command("1h --name c z");
+    const p = hold(s);
+    s.press(DOWN);
+    s.press("j");
+    s.press(ENTER);
+    await s.command("stop a");
+    p.key("p");
+    await s.flush();
+    expect(ws.loops().map((l) => [l.name, l.paused])).toEqual([
+      ["b", true],
+      ["c", false],
+    ]);
+    expect(selectedName(s)).toBe("b");
+
+    s.press(ENTER);
+    await s.command("stop b");
+    s.clearNotices();
+    p.key("p");
+    await s.flush();
+    expect(s.notices).toEqual([{ message: "no loop named b", type: "error" }]);
+    expect(ws.loops().map((l) => [l.name, l.paused])).toEqual([["c", false]]);
+    expect(selectedName(s)).toBe("c");
+  });
+});
+
+describe("AC-R6 x on the panel asks first", () => {
+  test("no changes nothing; yes removes the loop and returns to the roster; stopping the last loop closes it and removes the status line", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("1h --name b y");
+    const answers = [false, true, true];
+    s.confirmImpl = () => answers.shift() ?? false;
+    panel(s, ["x", "x", "x"]);
+    s.press(DOWN);
+    s.press("j");
+    s.press(ENTER);
+    await s.flush();
+    expect(ws.loops().map((l) => l.name)).toEqual(["a", "b"]);
+    expect(selectedName(s)).toBe("b");
+    s.clearNotices();
+    s.press(ENTER);
+    await s.flush();
+    expect(s.notices.map((n) => n.message)).toEqual(["stopped b"]);
+    expect(ws.loops().map((l) => l.name)).toEqual(["a"]);
+    expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER);
+    expect(selectedName(s)).toBe("a");
+    s.press(ENTER);
+    await s.flush();
+    expect(s.confirms).toEqual([
+      { title: "Stop b?", message: STOP_MESSAGE },
+      { title: "Stop b?", message: STOP_MESSAGE },
+      { title: "Stop a?", message: STOP_MESSAGE },
+    ]);
+    expect(ws.loops()).toEqual([]);
+    expect(s.status()).toBeUndefined();
+    expect(s.widgets[s.widgets.length - 1]?.factory).toBeUndefined();
+    expect(s.press(DOWN)).toBe(false);
+  });
+});
+
+describe("AC-R7 escape and ctrl+c on the panel return to the roster; other keys are ignored", () => {
+  test("stray keys leave the panel open and change nothing; escape and ctrl+c go back", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const before = fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8");
+    s.clearNotices();
+    const p = hold(s);
+    s.press(DOWN);
+    const open = s.status();
+    for (const back of [ESC, "\x03"]) {
+      s.press(ENTER);
+      for (const stray of ["q", "\n", ENTER, "P", "X"]) p.key(stray);
+      await s.flush();
+      expect(s.press(DOWN)).toBe(false);
+      p.key(back);
+      await s.flush();
+      expect(s.status()).toBe(open);
+      expect(s.press(DOWN)).toBe(true);
+    }
+    expect(p.opened()).toBe(2);
+    expect(s.confirms).toEqual([]);
+    expect(s.notices).toEqual([]);
+    expect(fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8")).toBe(before);
+  });
+});
+
+describe("AC-R9 the open roster follows live changes by the next tick", () => {
+  test("a fire and another session's change update the rows; the selection stays on its loop by name", async () => {
+    const s = ws.startSession();
+    await s.command("5m --name a x");
+    await s.command("1h --name b y");
+    s.press(DOWN);
+    s.press("j");
+    const other = ws.startSession();
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.status()?.split("\n")[1]).toBe(`    ${"a".padEnd(10)}  active   next 10:10  every 5m  #2`);
+    await other.command("pause b");
+    ws.tick();
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`);
+    await other.command("stop a");
+    ws.tick();
+    expect(s.status()?.split("\n").slice(1)).toEqual([`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`]);
+  });
+
+  test("a removed selection moves to the row now at its index, or the last row; no loops closes the roster and removes the line", async () => {
+    const s = ws.startSession();
+    for (const name of ["a", "b", "c", "d"]) await s.command(`1h --name ${name} x`);
+    await s.command("5m --name m --max 2 y");
+    s.press(DOWN);
+    s.press("j");
+    s.press("j");
+    expect(selectedName(s)).toBe("c");
+    const other = ws.startSession();
+    await other.command("stop c");
+    ws.tick();
+    expect(selectedName(s)).toBe("d");
+    s.press("j");
+    expect(selectedName(s)).toBe("m");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(ws.loops().map((l) => l.name)).toEqual(["a", "b", "d"]);
+    expect(selectedName(s)).toBe("d");
+    for (const name of ["a", "b", "d"]) await other.command(`stop ${name}`);
+    ws.tick();
+    expect(s.status()).toBe("  fired m #2");
+    ws.clock.advance(5000);
+    ws.tick();
+    expect(s.status()).toBeUndefined();
+    expect(s.widgets[s.widgets.length - 1]?.factory).toBeUndefined();
   });
 });
 
