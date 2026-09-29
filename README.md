@@ -69,10 +69,10 @@ The interval phrase is cut out of the text; what remains is the prompt.
 ```
 
 - Interval forms: `5m`, `5 min`, `2 hours`, `1d`, `hourly`, `daily`, `every hour`, `each day`, `1h30m`, `1 hour 30 minutes`. Minimum `1m`.
-- At the head or the tail of the text any form counts. In the middle only an `every`/`each` phrase counts, so `wait 5 minutes then retry` is prompt text, not an interval. Two phrases reject; say one.
-- Flags: `--name <n>`, `--max <n>`, `--until <ISO|HH:mm>`. Head or tail, never inside the prompt.
+- At the head of the text any form counts. At the tail only an `every`/`each` phrase, a compact form (`5m`, `2h`, `1d`, `1h30m`), `hourly`, or `daily` counts, so `summarize the day` has no interval and `5m check the last 3 days` keeps its duration in the prompt. In the middle only an `every`/`each` phrase counts, so `wait 5 minutes then retry` is prompt text, not an interval. Two phrases reject (`5m check again in 10m`); say one. An `and`/`then` a head phrase leaves at the start of the prompt is dropped: `1m and then ping` sends `ping`.
+- Flags: `--name <n>`, `--max <n>`, `--until <ISO|HH:mm>`. Head or tail, never inside the prompt. Tail flags are read before the interval, so `--name daily` is a name, not an interval.
 - The loop fires once on create, then every interval, counted from the fire itself. A loop that comes due while the agent is busy fires once when the agent settles.
-- `@path` reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in the loop's detail panel and the text listing; the loop stays alive.
+- A prompt that is one `@path` token reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in the loop's detail panel and the text listing; the loop stays alive. A prompt that goes on past the `@` word is text: `@alice please review` is sent as written.
 - `--name` defaults to `loop-<k>` with the lowest free `k`.
 - `--max n` removes the loop after its n-th fire. `--until` removes it at that time; `HH:mm` means the next such local time.
 - Pause keeps the counter. Resume counts the next due from the resume moment.
@@ -113,13 +113,13 @@ That is the stored text and what the model sees. On screen the whole message is 
 
 Only the owner fires. A second pi session in the same cwd lists the loops as `owned by pid <n>` and fires nothing. When the owner pid is dead, the next session takes over. Owner shutdown removes `owner.json`. A restart in the same cwd resumes every non-stopped loop; a loop whose due time passed while pi was down fires once at the first idle moment, then continues on its interval from that fire.
 
-Loop state is never read from the conversation. Compaction, `/tree`, and forks do not change a counter or a due time. Sessions without a UI (`pi -p`, RPC) never claim ownership and never fire.
+Loop state is never read from the conversation. Compaction, `/tree`, and forks do not change a counter or a due time. Only TUI sessions claim ownership and fire. Print, json, and RPC sessions never do, a pi-subagents child running as RPC included; their `/loop` commands still write the state file, and the TUI owner fires those loops.
 
 ## Verification
 
 ```bash
 bun test          # behavior against a mock pi host: firing, persistence, ownership, bounds, status line, roster
-bun run typecheck # tsc; also proves pi's ExtensionAPI satisfies the host surface used
+bun run typecheck # tsc; also proves pi's ExtensionAPI satisfies the host surface used, every event pi-loop subscribes to included (tests/host-contract.ts)
 grep -rnE 'cache_control|"ttl"|\bttl\s*[:=]|pi\.on\("context"|systemPrompt' extensions ; test $? -eq 1
 grep -rn 'sendUserMessage\|sendMessage' extensions | grep -v sendUserMessage ; test $? -eq 1
 ```
