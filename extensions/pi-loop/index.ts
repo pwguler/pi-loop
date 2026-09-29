@@ -365,8 +365,15 @@ export function run(pi: LoopHost, deps: Deps): void {
       // Without --name the name is settled first, so the save, the notice, and the first fire all carry it.
       const chosen: Chosen | undefined =
         cmd.name === undefined ? await chooseName(cmd.prompt, ctx, deps.namingDeadline, now) : undefined;
-      const name = cmd.name ?? (chosen?.ok ? uniqueName(chosen.name, loops) : defaultName(loops));
-      if (loops.some((l) => l.name === name)) {
+      // The wait for a name can span other creates, stops, and fires: read the state file again so the name and the save see them.
+      const reloaded = loadLoops(ctx.cwd);
+      if (!reloaded.ok) {
+        ctx.ui.notify(reloaded.error, "error");
+        return;
+      }
+      const latest = reloaded.value;
+      const name = cmd.name ?? (chosen?.ok ? uniqueName(chosen.name, latest) : defaultName(latest));
+      if (latest.some((l) => l.name === name)) {
         ctx.ui.notify(`loop ${name} already exists`, "error");
         return;
       }
@@ -380,8 +387,8 @@ export function run(pi: LoopHost, deps: Deps): void {
         max: cmd.max,
         until: cmd.until,
       };
-      loops.push(loop);
-      saveLoops(ctx.cwd, loops);
+      latest.push(loop);
+      saveLoops(ctx.cwd, latest);
       const owner = otherOwner(ctx, deps);
       ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}${chosen ? namingNote(chosen) : ""}`, "info");
       tick();

@@ -2195,6 +2195,90 @@ describe("AC-N6 a chosen name already taken gets the lowest free -2, -3", () => 
   });
 });
 
+describe("AC-N7 loops.json is read again after the name is settled", () => {
+  test("two creates in flight that the model names alike become x and x-2, both saved and fired once", async () => {
+    const s = modelSession();
+    s.modelAnswer = { text: "x" };
+    await Promise.all([s.command(`5m ${LONG}`), s.command(`10m ${LONG}`)]);
+    expect(ws.loops().map((l) => [l.name, l.intervalMs, l.fires])).toEqual([
+      ["x", 5 * MIN, 1],
+      ["x-2", 10 * MIN, 1],
+    ]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop x #1 2026-09-06 10:00]", "[loop x-2 #1 2026-09-06 10:00]"]);
+  });
+
+  test("two creates in flight that both time out become loop-1 and loop-2", async () => {
+    const s = modelSession();
+    s.modelAnswer = "until-aborted";
+    const first = s.command(`5m ${LONG}`);
+    const second = s.command(`10m ${LONG}`);
+    await s.flush();
+    ws.expireNaming();
+    await Promise.all([first, second]);
+    expect(ws.loops().map((l) => [l.name, l.intervalMs, l.fires])).toEqual([
+      ["loop-1", 5 * MIN, 1],
+      ["loop-2", 10 * MIN, 1],
+    ]);
+    // bun fails the test on an unhandled rejection; let a late one land inside it.
+    await s.flush();
+  });
+
+  test("a stop and a pause made while a create waits on the model are kept by its save", async () => {
+    const s = modelSession();
+    await s.command("5m --name gone ping");
+    await s.command("5m --name held ping");
+    s.modelAnswer = "until-aborted";
+    const pending = s.command(`5m ${LONG}`);
+    await s.flush();
+    await s.command("stop gone");
+    await s.command("pause held");
+    ws.expireNaming();
+    await pending;
+    expect(ws.loops().map((l) => [l.name, l.paused])).toEqual([
+      ["held", true],
+      ["loop-1", false],
+    ]);
+    await s.flush();
+  });
+
+  test("a fire made while a create waits on the model keeps its fires and dueAt after the save", async () => {
+    const s = modelSession();
+    await s.command("5m ping");
+    ws.clock.advance(5 * MIN);
+    s.modelAnswer = "until-aborted";
+    const pending = s.command(`5m ${LONG}`);
+    await s.flush();
+    ws.tick();
+    ws.expireNaming();
+    await pending;
+    expect(ws.loops().map((l) => [l.name, l.fires, l.dueAt])).toEqual([
+      ["ping", 2, T0 + 10 * MIN],
+      ["loop-1", 1, T0 + 10 * MIN],
+    ]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual([
+      "[loop ping #1 2026-09-06 10:00]",
+      "[loop ping #2 2026-09-06 10:05]",
+      "[loop loop-1 #1 2026-09-06 10:05]",
+    ]);
+    await s.flush();
+  });
+
+  test("when the read after the name fails, its error is notified and nothing is created", async () => {
+    const s = modelSession();
+    s.modelAnswer = "until-aborted";
+    const pending = s.command(`5m ${LONG}`);
+    await s.flush();
+    fs.mkdirSync(ws.file(".pi-loop"), { recursive: true });
+    fs.writeFileSync(ws.file(".pi-loop/loops.json"), "not json");
+    ws.expireNaming();
+    await pending;
+    expect(s.notices.map((n) => [n.type, n.message.startsWith(ws.file(".pi-loop/loops.json"))])).toEqual([["error", true]]);
+    expect(fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8")).toBe("not json");
+    expect(s.fires).toEqual([]);
+    await s.flush();
+  });
+});
+
 describe("AC-N8 the same naming in every mode", () => {
   test("rpc, json, and print sessions name loops as the TUI does", async () => {
     for (const mode of ["rpc", "json", "print"] as const) {
