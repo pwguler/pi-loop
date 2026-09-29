@@ -60,15 +60,22 @@ export function intervals(text: string): IntervalCandidate[] {
   return found;
 }
 
+// The forms a phrase may take at the tail without every/each: compact pairs
+// with no spaces (5m, 2h, 1d, 1h30m), hourly, or daily.
+const TAIL_FORM = /^(?:(?:\d+[mhd])+|hourly|daily)$/i;
+
 /**
- * Pick the one interval phrase in the text and cut it out. At the head or the
- * tail any form counts; in the middle only an every/each phrase does, so a
- * duration inside the instruction is never eaten. Two phrases reject.
+ * Pick the one interval phrase in the text and cut it out. At the head any
+ * form counts; at the tail only every/each, a compact form, hourly, or daily;
+ * in the middle only every/each, so a duration inside the instruction is never
+ * eaten. Two phrases reject.
  */
 export function parseIntervalPhrase(input: string): Result<{ ms: number; rest: string }> {
   const text = input.trim();
   const tailEnd = text.replace(/[\s.,;:!]+$/, "").length;
-  const candidates = intervals(text).filter((c) => c.prefixed || c.start === 0 || c.end === tailEnd);
+  const candidates = intervals(text).filter(
+    (c) => c.prefixed || c.start === 0 || (c.end === tailEnd && TAIL_FORM.test(c.text)),
+  );
   const [one, two] = candidates;
   if (!one) return { ok: false, error: "no interval found: say 5m, every 2 hours, hourly, or daily" };
   if (two) return { ok: false, error: `more than one interval: "${one.text}" and "${two.text}"; say one` };
@@ -79,12 +86,14 @@ export function parseIntervalPhrase(input: string): Result<{ ms: number; rest: s
 /**
  * Join the text around a removed phrase. Punctuation that touched the phrase
  * goes; a dangling and/then before it goes; an and/then after it stays, since
- * it still joins what follows to what came before.
+ * it still joins what follows to what came before, unless the phrase was at
+ * the head and nothing came before.
  */
 function stripJoin(before: string, after: string): string {
   const pre = before.replace(/[\s,;:.!]+$/, "").replace(/\s+(?:and|then)$/i, "");
   const post = after.replace(/^[\s,;:.!]+/, "");
-  return pre === "" ? post : post === "" ? pre : `${pre} ${post}`;
+  if (pre === "") return post.replace(/^(?:(?:and|then)(?:\s+|$))+/i, "");
+  return post === "" ? pre : `${pre} ${post}`;
 }
 
 /** Milliseconds to the shortest exact form: 5m, 2h, 1d, 1h30m. */

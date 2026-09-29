@@ -86,6 +86,40 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
     expect(s.fires[2]?.text).toBe("[loop loop-3 #1 2026-09-06 10:00]\nwait 5 minutes then check the build");
   });
 
+  test("at the tail only every/each, a compact form, hourly, or daily counts, so a duration in the prompt stays text", async () => {
+    const s = ws.startSession();
+    const cases: Array<[string, string, number]> = [
+      ["5m summarize the day", "summarize the day", 5 * MIN],
+      ["5m check the last 3 days", "check the last 3 days", 5 * MIN],
+      ["hourly ping me in a minute", "ping me in a minute", 60 * MIN],
+      ["check the build hourly", "check the build", 60 * MIN],
+      ["run tests every 2 hours", "run tests", 120 * MIN],
+      ["check the build 90m", "check the build", 90 * MIN],
+    ];
+    for (const [input, prompt, ms] of cases) {
+      s.fires.length = 0;
+      await s.command(`--name c ${input}`);
+      expect([input, s.fires.map((f) => f.text.split("\n").slice(1).join("\n"))]).toEqual([input, [prompt]]);
+      expect(ws.loops().at(-1)?.intervalMs).toBe(ms);
+      await s.command("stop c");
+    }
+
+    for (const bad of ["summarize the day", "check the build 2 hours"]) {
+      s.clearNotices();
+      await s.command(bad);
+      expect(s.notices).toEqual([{ message: "no interval found: say 5m, every 2 hours, hourly, or daily", type: "error" }]);
+    }
+    expect(ws.loops()).toHaveLength(0);
+  });
+
+  test("an and/then left at the start of the prompt by a head phrase is dropped, whole words only", async () => {
+    const s = ws.startSession();
+    await s.command("1m and then ping");
+    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:00]\nping");
+    await s.command("1m then-what");
+    expect(s.fires[1]?.text).toBe("[loop loop-2 #1 2026-09-06 10:00]\nthen-what");
+  });
+
   test("two interval phrases reject with both shown and create nothing", async () => {
     const s = ws.startSession();
     await s.command("5m check the build every 2 hours");
@@ -250,6 +284,21 @@ describe("AC-7 list, stop, pause, resume", () => {
 });
 
 describe("AC-3 @file prompt source is re-read at every fire", () => {
+  test("only a prompt that is one @<path> token is a file; @ followed by more words is text", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("prompt.md"), "from the file\n");
+    await s.command("5m @alice please review the PR");
+    await s.command("every 50 min @prompt.md");
+    expect(ws.loops().map((l) => l.prompt)).toEqual([
+      { kind: "text", text: "@alice please review the PR" },
+      { kind: "file", path: "prompt.md" },
+    ]);
+    expect(s.fires.map((f) => f.text)).toEqual([
+      "[loop loop-1 #1 2026-09-06 10:00]\n@alice please review the PR",
+      "[loop loop-2 #1 2026-09-06 10:00]\nfrom the file",
+    ]);
+  });
+
   test("editing the file between fires changes the next fire's text", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("prompt.md"), "first version\n");
@@ -539,6 +588,16 @@ describe("AC-8 names", () => {
     s.clearNotices();
     await s.command("5m ping --max x");
     expect(s.notices).toEqual([{ message: 'bad --max "x": positive integer', type: "error" }]);
+  });
+
+  test("tail flags are read before the interval, so a flag value is never taken for an interval", async () => {
+    const s = ws.startSession();
+    await s.command("every day summarize the repo --name daily");
+    await s.command("check --name x every 5m");
+    expect(ws.loops().map((l) => [l.name, l.intervalMs, l.prompt])).toEqual([
+      ["daily", 1440 * MIN, { kind: "text", text: "summarize the repo" }],
+      ["x", 5 * MIN, { kind: "text", text: "check" }],
+    ]);
   });
 });
 
