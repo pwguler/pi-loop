@@ -73,7 +73,8 @@ The interval phrase is cut out of the text; what remains is the prompt.
 - Flags: `--name <n>`, `--max <n>`, `--until <ISO|HH:mm>`. Head or tail, never inside the prompt. Tail flags are read before the interval, so `--name daily` is a name, not an interval.
 - The loop fires once on create, then every interval, counted from the fire itself. A loop that comes due while the agent is busy fires once when the agent settles.
 - A prompt that is one `@path` token reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in the loop's detail panel and the text listing; the loop stays alive. A prompt that goes on past the `@` word is text: `@alice please review` is sent as written.
-- `--name` defaults to `loop-<k>` with the lowest free `k`.
+- Without `--name`, in a session with a model, the loop is named before it is created and first fires, by the first rule that applies: an `@path` prompt takes the file's name (`@prompt.md` → `prompt`); a prompt of up to 3 words that already makes a name of at most 16 characters is used as it is (`ping` → `ping`, `check build` → `check-build`); otherwise the session's model picks a 1–3 word hyphenated name of at most 16 characters, in one side request that adds nothing to the conversation and is given up after 20 seconds. A taken name gets `-2`, `-3`.
+- With no model, a failed or timed-out call, no usable answer, or a file name that leaves nothing, the name is `loop-<k>` with the lowest free `k`. When the model was tried and failed, the create notice says why: `· naming timed out`, `· naming failed`, `· naming gave no usable name`.
 - `--max n` removes the loop after its n-th fire. `--until` removes it at that time; `HH:mm` means the next such local time.
 - Pause keeps the counter. Resume counts the next due from the resume moment.
 
