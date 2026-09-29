@@ -33,21 +33,29 @@ pi install ./pi-loop
 ## Usage
 
 ```
-/loop                             picker: one row per loop; Enter opens the loop, Esc closes
-/loop list                        the same picker
+/loop                             the roster: one row per loop
+/loop list                        the same roster
 /loop [flags] <text with an interval phrase> [flags]
 /loop stop <name>
 /loop pause <name>
 /loop resume <name>
 ```
 
-In the picker, Enter on a loop opens its detail panel (interval, prompt, next, fires, status, bounds, last error) drawn like pi's own dialogs, with single keys along the bottom:
+In the TUI, both forms open the roster, the list of loops; so does ↓ or ← on an empty prompt editor. The status line expands in place into a header and one row per loop (name, status, next, interval, fires):
+
+```
+loops · ↑↓/jk select · enter open · esc back
+```
+
+↑↓ or j/k select, Enter opens the selected loop's detail panel, Esc goes back to the status line, and so does ↑ on the first row. Any other key closes the roster and goes to the editor. With no loops, both forms print `no loops`.
+
+The detail panel (interval, prompt, next, fires, status, bounds, last error) is drawn like pi's own dialogs, with single keys along the bottom:
 
 ```
 p pause  x stop  escape/ctrl+c back        (p resume when the loop is paused)
 ```
 
-`x` asks first. Each key runs the typed command, so the state file, the notice, and the footer update the same way, and the list comes back showing the new state. Without a UI (`pi -p`, RPC), both forms print one text line per loop instead.
+`x` asks first. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster comes back showing the new state. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
 
 The interval phrase is cut out of the text; what remains is the prompt.
 
@@ -64,25 +72,28 @@ The interval phrase is cut out of the text; what remains is the prompt.
 - At the head or the tail of the text any form counts. In the middle only an `every`/`each` phrase counts, so `wait 5 minutes then retry` is prompt text, not an interval. Two phrases reject; say one.
 - Flags: `--name <n>`, `--max <n>`, `--until <ISO|HH:mm>`. Head or tail, never inside the prompt.
 - The loop fires once on create, then every interval, counted from the fire itself. A tick that comes due while the agent is busy fires once when the agent settles.
-- `@path` reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in `/loop list`; the loop stays alive.
+- `@path` reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in the loop's detail panel and the text listing; the loop stays alive.
 - `--name` defaults to `loop-<k>` with the lowest free `k`.
 - `--max n` removes the loop after its n-th fire. `--until` removes it at that time; `HH:mm` means the next such local time.
 - Pause keeps the counter. Resume counts the next due from the resume moment.
 
 ## Status line
 
-While loops exist, one line in pi's footer:
+While loops exist, one line directly below the prompt editor, above pi's footer:
 
 ```
-1 active · next loop-1 02:42              steady: counts and the earliest due active loop
-2 active, 1 paused · due fast             fast is overdue and the agent is busy; it fires on settle
-2 active · fired fast #6                  for 5s after a fire, then back to next
-1 paused                                  everything paused
-2 loops · owned by pid 4242               this session is not the owner
-3 active · next b 10:05 · 1 error         some loop has a last error; /loop list has the message
+1 active loop · next loop-1 02:42 · ↓/← to manage            steady: counts and the earliest due active loop
+2 active loops, 1 paused · due fast · ↓/← to manage          fast is overdue and the agent is busy; it fires on settle
+2 active loops · fired fast #6 · ↓/← to manage               for 5s after a fire, then back to next
+2 paused loops · ↓/← to manage                               everything paused
+3 active loops · next b 10:05 · 1 error · ↓/← to manage      some loop has a last error; its detail panel has the message
+2 loops · owned by pid 4242 · ↓/← to manage                  this session is not the owner
+fired smoke #6                                               the last loop reached --max on that fire; 5s, then no line
 ```
 
-The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the error suffix `error`, separators and times `dim`. No loops, no line. The footer is written through `ctx.ui.setStatus` only, and only when the text changes.
+The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the error suffix `error`, separators, times, and the `↓/← to manage` hint `dim`. No loops, no line. The line is one below-editor widget, registered once when the first loop appears and redrawn only when its text changes.
+
+pi hands a key to the extensions' terminal listeners in the order they registered, and the first one that consumes it keeps it. With pi-loop listed before pi-subagents in settings, pi-subagents' fleet line does not open with ↓/← while loops exist.
 
 Each fire is one user message:
 
@@ -107,7 +118,7 @@ Loop state is never read from the conversation. Compaction, `/tree`, and forks d
 ## Verification
 
 ```bash
-bun test          # behavior against a mock pi host: firing, persistence, ownership, bounds, footer, picker
+bun test          # behavior against a mock pi host: firing, persistence, ownership, bounds, status line, roster
 bun run typecheck # tsc; also proves pi's ExtensionAPI satisfies the host surface used
 grep -rnE 'cache_control|"ttl"|\bttl\s*[:=]|pi\.on\("context"|systemPrompt' extensions ; test $? -eq 1
 grep -rn 'sendUserMessage\|sendMessage' extensions | grep -v sendUserMessage ; test $? -eq 1
