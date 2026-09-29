@@ -19,7 +19,7 @@ pi install git:github.com/pwguler/pi-loop
 Pin a release so updates don't move under you:
 
 ```sh
-pi install git:github.com/pwguler/pi-loop@v0.1.0
+pi install git:github.com/pwguler/pi-loop@v0.2.0
 ```
 
 To update a git-installed package later, install the next tag the same way. Start or reload pi, then `/loop` is available. To try it without installing, use `pi -e git:github.com/pwguler/pi-loop`.
@@ -126,6 +126,43 @@ grep -rn 'sendUserMessage\|sendMessage' extensions | grep -v sendUserMessage ; t
 ```
 
 The two greps hold the line the extension exists for: no cache markers, no TTL, no context hook, no system prompt change, and `sendUserMessage` as the only path that adds text to the conversation.
+
+## Releasing
+
+Releases publish from CI on a version tag. Bump, tag, push:
+
+```sh
+VERSION=0.2.0
+npm version "$VERSION" --no-git-tag-version
+git add package.json   # plus bun.lock if the bump changed it
+git commit -m "chore(release): v$VERSION"
+git tag "v$VERSION"
+git push origin main --tags
+```
+
+`.github/workflows/publish.yml` then runs typecheck and the full test suite and
+refuses the release unless the tag matches `package.json`, the tagged commit is
+on `main`, and the version is not already on the registry. It publishes with a
+provenance attestation linking the tarball to this repository and commit.
+
+Publishing needs a repository secret named `NPM_TOKEN`, holding a granular
+access token:
+
+- **Permissions**: *Read and write*. *Read-only*, and the *stage only* variant
+  of read and write, cannot run `npm publish`.
+- **Packages and scopes**: *All packages*.
+- **Bypass two-factor authentication**: ticked. A token that prompts for an OTP
+  cannot publish unattended.
+- **Expiration**: whatever you will actually remember to rotate. When it lapses,
+  the release fails at the publish step.
+
+On the token form, leave **Organizations** at *No access*: this package lives in
+a user scope (`@pwguler`), not an organization, so a personal account has
+nothing to select there. Choosing *Only select packages and scopes* instead of
+*All packages* asks for a scope selection that such an account cannot satisfy.
+
+`.github/workflows/ci.yml` runs typecheck and tests on pull requests and pushes
+to `main`, and is the same gate the publish job depends on.
 
 ## License
 
