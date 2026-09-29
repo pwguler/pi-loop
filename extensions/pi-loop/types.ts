@@ -10,8 +10,19 @@ export interface Panel {
   invalidate(): void;
 }
 
+/**
+ * The tui a widget factory is given. pi-tui's TUI interface has no focus
+ * getter, but its runtime object does; optional, so pi's TUI still fits and a
+ * tui without one reads as not focused.
+ */
+export interface WidgetTui {
+  requestRender(): void;
+  getFocusedComponent?(): unknown;
+}
+
 export interface LoopContext {
   cwd: string;
+  mode: "tui" | "rpc" | "json" | "print";
   hasUI: boolean;
   sessionManager: { getSessionId(): string };
   isIdle(): boolean;
@@ -20,9 +31,12 @@ export interface LoopContext {
     /** A component widget; undefined removes it. pi calls the factory synchronously. */
     setWidget(
       key: string,
-      factory: ((tui: { requestRender(): void }, theme: Pick<Theme, "fg" | "bold">) => Panel) | undefined,
+      factory: ((tui: WidgetTui, theme: Pick<Theme, "fg" | "bold">) => Panel) | undefined,
       options?: { placement?: "aboveEditor" | "belowEditor" },
     ): void;
+    /** Sees every terminal key before the editor; {consume:true} stops it there. Returns the unsubscribe. */
+    onTerminalInput(handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void;
+    getEditorText(): string;
     select(title: string, options: string[]): Promise<string | undefined>;
     confirm(title: string, message: string): Promise<boolean>;
     custom<T>(

@@ -119,10 +119,10 @@ export class Workspace {
   }
 
   /** Start a session: fresh MockPi, fresh pid (alive), session_start emitted. */
-  startSession(opts: { pid?: number; hasUI?: boolean } = {}): Session {
+  startSession(opts: { pid?: number; hasUI?: boolean; mode?: LoopContext["mode"] } = {}): Session {
     const pid = opts.pid ?? this.nextPid++;
     this.alive.add(pid);
-    const session = new Session(this, pid, `session-${pid}`, opts.hasUI ?? true);
+    const session = new Session(this, pid, `session-${pid}`, opts.hasUI ?? true, opts.mode ?? "tui");
     session.emit("session_start");
     return session;
   }
@@ -130,6 +130,18 @@ export class Workspace {
 
 /** Wide enough that no status line in these tests is cut. */
 const SCREEN_WIDTH = 200;
+
+type InputHandler = Parameters<LoopContext["ui"]["onTerminalInput"]>[0];
+
+/** A component shaped like pi's prompt editor: what has focus while the user types. */
+export function editorComponent(): unknown {
+  return { render: () => [], invalidate() {}, handleInput() {}, getText: () => "", setText() {} };
+}
+
+/** A component shaped like a dialog or selector: focusable, but not the editor. */
+export function dialogComponent(): unknown {
+  return { render: () => [], invalidate() {}, handleInput() {} };
+}
 
 export class Session implements LoopHost {
   readonly handlers = new Map<string, LoopHandler>();
@@ -143,8 +155,16 @@ export class Session implements LoopHost {
   requestRenders = 0;
   /** The registered widget, as pi keeps it after calling the factory. */
   private widget: Panel | undefined;
-  /** What the screen shows: the widget's line as of its registration or its last requestRender. */
-  private screen: string | undefined;
+  /** What the screen shows: the widget's lines as of its registration or its last requestRender. */
+  private screen: string[] | undefined;
+  /** Terminal input listeners, in subscription order. */
+  readonly inputListeners: InputHandler[] = [];
+  /** Keys that were not consumed and so reached the editor, as rewritten by the listeners. */
+  readonly editorKeys: string[] = [];
+  /** The prompt editor's text. */
+  editorText = "";
+  /** What the widget's tui reports as focused; the editor by default. */
+  focused: unknown = editorComponent();
   /** Every ctx.ui.select call: title and rows. */
   readonly selects: Array<{ title: string; options: string[] }> = [];
   /** Every ctx.ui.confirm call. */
@@ -163,11 +183,13 @@ export class Session implements LoopHost {
     readonly pid: number,
     readonly sessionId: string,
     hasUI: boolean,
+    readonly mode: LoopContext["mode"],
   ) {
     const self = this;
     this.hasUI = hasUI;
     this.ctx = {
       cwd: ws.cwd,
+      mode,
       get hasUI() {
         return self.hasUI;
       },
@@ -180,9 +202,17 @@ export class Session implements LoopHost {
         setWidget(key, factory, options) {
           self.widgets.push({ key, factory, placement: options?.placement });
           // Like pi: the factory runs synchronously inside setWidget.
-          self.widget = factory?.({ requestRender: () => self.redraw() }, theme);
-          self.screen = self.widget?.render(SCREEN_WIDTH)[0];
+          self.widget = factory?.({ requestRender: () => self.redraw(), getFocusedComponent: () => self.focused }, theme);
+          self.screen = self.widget?.render(SCREEN_WIDTH);
         },
+        onTerminalInput(handler) {
+          self.inputListeners.push(handler);
+          return () => {
+            const i = self.inputListeners.indexOf(handler);
+            if (i >= 0) self.inputListeners.splice(i, 1);
+          };
+        },
+        getEditorText: () => self.editorText,
         async select(title: string, options: string[]) {
           self.selects.push({ title, options });
           return self.selectImpl(title, options);
@@ -269,19 +299,36 @@ export class Session implements LoopHost {
     this.notices.length = 0;
   }
 
-  private redraw(): void {
-    this.requestRenders += 1;
-    this.screen = this.widget?.render(SCREEN_WIDTH)[0];
+  /**
+   * A key from the terminal, as pi-tui delivers it: listeners run in
+   * subscription order, the first {consume:true} stops it, a returned data
+   * rewrites it. Returns whether it was consumed; an unconsumed key is
+   * recorded as reaching the editor.
+   */
+  press(data: string): boolean {
+    let current = data;
+    for (const listener of [...this.inputListeners]) {
+      const result = listener(current);
+      if (result?.consume) return true;
+      if (result?.data !== undefined) current = result.data;
+    }
+    this.editorKeys.push(current);
+    return false;
   }
 
-  /** The status line on screen, color tags stripped; undefined when no widget is registered. */
+  private redraw(): void {
+    this.requestRenders += 1;
+    this.screen = this.widget?.render(SCREEN_WIDTH);
+  }
+
+  /** The widget's lines on screen joined by newlines, color tags stripped; undefined when no widget is registered. */
   status(): string | undefined {
     return this.styled()?.replace(/<\/?[a-zA-Z]+>/g, "");
   }
 
-  /** The status line on screen with the mock theme's color tags. */
+  /** The widget's lines on screen joined by newlines, with the mock theme's color tags. */
   styled(): string | undefined {
-    return this.screen;
+    return this.screen?.join("\n");
   }
 }
 

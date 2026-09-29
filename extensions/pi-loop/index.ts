@@ -5,11 +5,26 @@
 // lives in <cwd>/.pi-loop/loops.json and owner.json, never in the session.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { defaultName, parseCommand } from "./command.ts";
 import { formatInterval } from "./interval.ts";
 import { claimOwner, loadLoops, message, otherOwner, readPrompt, releaseOwner, saveLoops } from "./state.ts";
-import type { Deps, Loop, LoopContext, LoopHost } from "./types.ts";
-import { detailPanel, displayFire, formatLoop, formatLocal, pickerRow, statusLine, statusWidget, type PanelAction, type Segment } from "./ui.ts";
+import type { Deps, Loop, LoopContext, LoopHost, WidgetTui } from "./types.ts";
+import {
+  detailPanel,
+  displayFire,
+  formatLoop,
+  formatLocal,
+  lineText,
+  rosterLines,
+  rosterRow,
+  spaced,
+  statusLine,
+  statusWidget,
+  type Line,
+  type PanelAction,
+  type Segment,
+} from "./ui.ts";
 
 export type { Deps, Loop, LoopContext, LoopHandler, LoopHost, MarkdownTransform, Panel, PromptSource } from "./types.ts";
 
@@ -25,12 +40,20 @@ interface Session {
   stopTicker: () => void;
   /** Last state-file error shown, so it is shown once until it changes. */
   reported?: string;
-  /** The status line's text as last rendered, so the screen is touched only on change. */
+  /** The widget's text as last drawn, every line, so the screen is touched only on change. */
   status?: string;
-  /** The status line the widget draws. */
-  line: Segment[];
+  /** The lines the widget draws: the status line, or the roster while it is open. */
+  lines: Line[];
+  /** The loops, their other owner, and the status line as of the last render; keys draw from these, never from the state file. */
+  loops: Loop[];
+  owner?: number;
+  segments?: Segment[];
+  /** The open roster and its selected loop, by name; undefined while collapsed to the status line. */
+  roster?: { selected: string };
+  /** Removes the terminal input listener; set in TUI mode only. */
+  unsubscribe?: () => void;
   /** The registered widget's tui, through which every later change is redrawn; undefined while no widget is registered. */
-  tui?: { requestRender(): void };
+  tui?: WidgetTui;
   /** The last fire, shown in the status line until `until`. */
   pulse?: { name: string; fires: number; until: number };
 }
@@ -97,48 +120,117 @@ export function run(pi: LoopHost, deps: Deps): void {
     render();
   }
 
-  /**
-   * Redraw the status line, only when its text changes: register the widget
-   * when the line first has content, redraw it through its tui while it
-   * keeps content, remove it when the line is empty.
-   */
+  /** Read the state file, cache what the widget draws from, and draw it. */
   function render(): void {
     if (!session) return;
     const loaded = loadLoops(session.ctx.cwd);
     if (!loaded.ok) return;
     const now = deps.now();
     if (session.pulse && session.pulse.until <= now) session.pulse = undefined;
-    const segments = statusLine(loaded.value, otherOwner(session.ctx, deps), session.pulse, session.ctx.isIdle(), now);
-    const text = segments?.map((s) => s.text).join(" ");
-    if (text === session.status) return;
-    session.status = text;
-    if (!segments) {
-      session.tui = undefined;
-      session.ctx.ui.setWidget(WIDGET_KEY, undefined);
+    session.loops = loaded.value;
+    session.owner = otherOwner(session.ctx, deps);
+    session.segments = statusLine(session.loops, session.owner, session.pulse, session.ctx.isIdle(), now);
+    draw(session);
+  }
+
+  /**
+   * Draw the status line, or the roster while it is open, from the last
+   * render's cache, only when the text changes: register the widget when it
+   * first has content, redraw it through its tui while it keeps content,
+   * remove it when there is nothing to show. The roster closes when no loops
+   * remain; a selected loop that is gone falls back to the first row.
+   */
+  function draw(live: Session): void {
+    const first = live.loops[0];
+    if (!first) live.roster = undefined;
+    else if (live.roster && !live.loops.some((l) => l.name === live.roster?.selected)) live.roster.selected = first.name;
+    const roster = live.roster;
+    const lines = !live.segments
+      ? undefined
+      : roster
+        ? rosterLines(live.loops, live.owner, live.loops.findIndex((l) => l.name === roster.selected))
+        : [spaced(live.segments)];
+    const text = lines?.map(lineText).join("\n");
+    if (text === live.status) return;
+    live.status = text;
+    if (!lines) {
+      live.tui = undefined;
+      live.ctx.ui.setWidget(WIDGET_KEY, undefined);
       return;
     }
-    session.line = segments;
-    if (session.tui) {
-      session.tui.requestRender();
+    live.lines = lines;
+    if (live.tui) {
+      live.tui.requestRender();
     } else {
-      const live = session;
       live.ctx.ui.setWidget(
         WIDGET_KEY,
         (tui, theme) => {
           live.tui = tui;
-          return statusWidget(() => live.line, theme);
+          return statusWidget(() => live.lines, theme);
         },
         { placement: "belowEditor" },
       );
     }
   }
 
+  /**
+   * A terminal key, before the editor sees it. Collapsed, ↓ or ← on an empty,
+   * focused editor with loops present opens the roster; every other key passes.
+   * Open: ↓/j and ↑/k move, ↑/k on the first row and Esc collapse, and any other
+   * key collapses and passes through. The cheap checks come first; nothing here
+   * reads the state file.
+   */
+  function onKey(live: Session, data: string): { consume: true } | undefined {
+    if (isKeyRelease(data)) return undefined;
+    const roster = live.roster;
+    if (!roster) {
+      if (!matchesKey(data, "down") && !matchesKey(data, "left")) return undefined;
+      const first = live.loops[0];
+      if (!first || live.ctx.ui.getEditorText() !== "" || !editorHasFocus(live.tui)) return undefined;
+      live.roster = { selected: first.name };
+      draw(live);
+      return { consume: true };
+    }
+    const collapse = () => {
+      live.roster = undefined;
+      draw(live);
+    };
+    if (!editorHasFocus(live.tui)) {
+      collapse();
+      return undefined;
+    }
+    const i = Math.max(0, live.loops.findIndex((l) => l.name === roster.selected));
+    if (matchesKey(data, "down") || matchesKey(data, "j")) {
+      roster.selected = live.loops[Math.min(i + 1, live.loops.length - 1)]?.name ?? roster.selected;
+      draw(live);
+      return { consume: true };
+    }
+    if (matchesKey(data, "up") || matchesKey(data, "k")) {
+      if (i === 0) collapse();
+      else {
+        roster.selected = live.loops[i - 1]?.name ?? roster.selected;
+        draw(live);
+      }
+      return { consume: true };
+    }
+    if (matchesKey(data, "escape")) {
+      collapse();
+      return { consume: true };
+    }
+    collapse();
+    return undefined;
+  }
+
   pi.on("session_start", (_event, ctx) => {
     session?.stopTicker();
+    session?.unsubscribe?.();
     session = undefined;
     // Interactive sessions only. A -p run has no UI and must not fire loops.
     if (!ctx.hasUI) return;
-    session = { ctx, stopTicker: deps.ticker(() => safely(tick)), line: [] };
+    const live: Session = { ctx, stopTicker: deps.ticker(() => safely(tick)), lines: [], loops: [] };
+    session = live;
+    // The roster exists in the TUI only; the listener is there from the start, loops or not.
+    if (ctx.mode === "tui") live.unsubscribe = ctx.ui.onTerminalInput((data) => onKey(live, data));
     render();
   });
 
@@ -148,6 +240,8 @@ export function run(pi: LoopHost, deps: Deps): void {
 
   pi.on("session_shutdown", (_event, ctx) => {
     session?.stopTicker();
+    session?.unsubscribe?.();
+    if (session?.tui) session.ctx.ui.setWidget(WIDGET_KEY, undefined);
     session = undefined;
     releaseOwner(ctx, deps);
   });
@@ -266,7 +360,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       }
       const loops = loaded.value;
       const owner = otherOwner(ctx, deps);
-      const rows = loops.map((l) => pickerRow(l, owner));
+      const rows = loops.map((l) => lineText(rosterRow(l, owner)));
       const picked = await ctx.ui.select("loops", rows.length === 0 ? ["no loops"] : rows);
       const loop = picked === undefined ? undefined : loops[rows.indexOf(picked)];
       if (!loop) return;
@@ -280,6 +374,25 @@ export function run(pi: LoopHost, deps: Deps): void {
       }
     }
   }
+}
+
+/** The editor has focus when the focused component is shaped like pi's editor; a tui with no focus getter never has it. */
+function editorHasFocus(tui: WidgetTui | undefined): boolean {
+  const focused = tui?.getFocusedComponent?.();
+  return (
+    typeof focused === "object" &&
+    focused !== null &&
+    "render" in focused &&
+    typeof focused.render === "function" &&
+    "invalidate" in focused &&
+    typeof focused.invalidate === "function" &&
+    "handleInput" in focused &&
+    typeof focused.handleInput === "function" &&
+    "getText" in focused &&
+    typeof focused.getText === "function" &&
+    "setText" in focused &&
+    typeof focused.setText === "function"
+  );
 }
 
 /** Timer callbacks run outside pi's handler error path; never let one crash the process. */

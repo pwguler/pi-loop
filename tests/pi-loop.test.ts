@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { Workspace, type Session } from "./mock-pi.ts";
+import { dialogComponent, editorComponent, Workspace, type Session } from "./mock-pi.ts";
 
 // A fixed instant in local time so header and list output are asserted
 // without timezone math: 2026-09-06 10:00 local.
@@ -1223,5 +1223,312 @@ describe("AC-P6 escape and ctrl+c on the panel return to the list; other keys ar
     await p.command("");
     expect(p.lastNotice()).toBe(listed);
     expect(p.selects).toEqual([]);
+  });
+});
+
+// docs/specs/pi-loop-roster.md
+
+const DOWN = "\x1b[B";
+const UP = "\x1b[A";
+const LEFT = "\x1b[D";
+const ESC = "\x1b";
+const ENTER = "\r";
+/** ↓ released, in the Kitty keyboard protocol's event-type form: pi-tui's isKeyRelease recognizes it and matchesKey still reads it as down. */
+const DOWN_RELEASE = "\x1b[1;1:3B";
+const ROSTER_HEADER = "  loops · ↑↓/jk select · enter open · esc back";
+
+describe("AC-R1 down or left on an empty, focused editor opens the roster", () => {
+  test("down and left open it with the first row selected and are consumed", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name slow a");
+    await s.command("5m --name fast b");
+    const line = s.status();
+    expect(s.press(DOWN)).toBe(true);
+    expect(s.status()?.split("\n").slice(0, 2)).toEqual([ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #1"]);
+    expect(s.press(ESC)).toBe(true);
+    expect(s.status()).toBe(line);
+    expect(s.press(LEFT)).toBe(true);
+    expect(s.status()?.split("\n")[1]).toBe("  › slow        active   next 12:00  every 2h  #1");
+    expect(s.editorKeys).toEqual([]);
+  });
+
+  test("a non-empty editor, a dialog with focus, no loops, or a key release: the key passes through and nothing opens", async () => {
+    const empty = ws.startSession();
+    expect(empty.press(DOWN)).toBe(false);
+    expect(empty.editorKeys).toEqual([DOWN]);
+    empty.shutdown();
+
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const line = s.status();
+    const renders = s.requestRenders;
+
+    s.editorText = "draft";
+    expect(s.press(DOWN)).toBe(false);
+    s.editorText = " ";
+    expect(s.press(LEFT)).toBe(false);
+    s.editorText = "";
+
+    s.focused = dialogComponent();
+    expect(s.press(DOWN)).toBe(false);
+    s.focused = null;
+    expect(s.press(LEFT)).toBe(false);
+    s.focused = undefined;
+    expect(s.press(DOWN)).toBe(false);
+
+    s.focused = editorComponent();
+    expect(s.press(DOWN_RELEASE)).toBe(false);
+
+    expect(s.editorKeys).toEqual([DOWN, LEFT, DOWN, LEFT, DOWN, DOWN_RELEASE]);
+    expect(s.status()).toBe(line);
+    expect(s.requestRenders).toBe(renders);
+    expect(s.press(DOWN)).toBe(true);
+  });
+
+  test("typing keys the editor owns pass through untouched while the roster is closed: j, k, h, up (history), Enter", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const line = s.status();
+    for (const key of ["j", "k", "h", UP, ENTER]) expect(s.press(key)).toBe(false);
+    expect(s.editorKeys).toEqual(["j", "k", "h", UP, ENTER]);
+    expect(s.status()).toBe(line);
+    expect(s.press(DOWN)).toBe(true);
+  });
+
+  test("a tui with no focus getter counts as not focused: the roster fails closed", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    const factory = s.widgets[0]?.factory;
+    if (!factory) throw new Error("no widget registered");
+    const plain = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+    factory({ requestRender() {} }, plain);
+    expect(s.press(DOWN)).toBe(false);
+    expect(s.editorKeys).toEqual([DOWN]);
+    factory({ requestRender() {}, getFocusedComponent: editorComponent }, plain);
+    expect(s.press(DOWN)).toBe(true);
+  });
+});
+
+describe("AC-R2 the roster draws a header and one row per loop", () => {
+  test("header, then marker, name, status, next, interval, fires per row, in state-file order", async () => {
+    const a = ws.startSession();
+    await a.command("2h --name slow a");
+    await a.command("5m --name fast b");
+    await a.command("pause fast");
+    a.press(DOWN);
+    expect(a.status()).toBe(
+      [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #1", "    fast        paused   next -      every 5m  #1"].join("\n"),
+    );
+    const b = ws.startSession();
+    ws.tick();
+    b.press(DOWN);
+    expect(b.status()?.split("\n")[1]).toBe(`  › slow        owned by pid ${a.pid}  next 12:00  every 2h  #1`);
+  });
+
+  test("colors: loops muted, rest of the header dim, marker accent, status by state, everything else default", async () => {
+    const a = ws.startSession();
+    await a.command("2h --name slow a");
+    await a.command("5m --name fast b");
+    await a.command("pause fast");
+    a.press(DOWN);
+    expect(a.styled()).toBe(
+      [
+        "  <muted>loops</muted> <dim>· ↑↓/jk select · enter open · esc back</dim>",
+        "  <accent>›</accent> slow        <success>active</success>   next 12:00  every 2h  #1",
+        "    fast        <dim>paused</dim>   next -      every 5m  #1",
+      ].join("\n"),
+    );
+    const b = ws.startSession();
+    ws.tick();
+    b.press(DOWN);
+    b.press(DOWN);
+    expect(b.styled()?.split("\n").slice(1)).toEqual([
+      `    slow        <muted>owned by pid ${a.pid}</muted>  next 12:00  every 2h  #1`,
+      `  <accent>›</accent> fast        <dim>paused</dim>   next -      every 5m  #1`,
+    ]);
+  });
+
+  test("at most 8 rows show; the window scrolls to keep the selection in view", async () => {
+    const s = ws.startSession();
+    for (let i = 0; i < 10; i++) await s.command(`1h --name l${i} x`);
+    const names = () => (s.status() ?? "").split("\n").slice(1).map((l) => l.slice(2, 7).trim());
+    s.press(DOWN);
+    expect(names()).toEqual(["› l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7"]);
+    for (let i = 0; i < 8; i++) s.press(DOWN);
+    expect(names()).toEqual(["l1", "l2", "l3", "l4", "l5", "l6", "l7", "› l8"]);
+    s.press("j");
+    s.press("j");
+    expect(names()).toEqual(["l2", "l3", "l4", "l5", "l6", "l7", "l8", "› l9"]);
+    for (let i = 0; i < 9; i++) s.press(UP);
+    expect(names()).toEqual(["› l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7"]);
+  });
+
+  test("every line fits the render width, cut with pi-tui's ellipsis", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name a-rather-long-loop-name a");
+    await s.command("5m --name b b");
+    s.press(DOWN);
+    const factory = s.widgets[s.widgets.length - 1]?.factory;
+    if (!factory) throw new Error("no widget registered");
+    const ansi = { fg: (_color: string, text: string) => `\x1b[32m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m` };
+    const widget = factory({ requestRender() {} }, ansi);
+    expect(widget.render(200).map(stripAnsi)).toEqual([
+      ROSTER_HEADER,
+      "  › a-rather-long-loop-name  active   next 12:00  every 2h  #1",
+      "    b           active   next 10:05  every 5m  #1",
+    ]);
+    for (let width = 1; width <= 80; width++) {
+      const lines = widget.render(width);
+      expect(lines).toHaveLength(3);
+      for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(width);
+    }
+    expect(stripAnsi(widget.render(20)[1] ?? "")).toBe("  › a-rather-long...");
+  });
+});
+
+describe("AC-R3 keys on the open roster move, collapse, or pass through", () => {
+  async function three(): Promise<Session> {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("1h --name b y");
+    await s.command("1h --name c z");
+    return s;
+  }
+  const selected = (s: Session) => (s.status() ?? "").split("\n").find((l) => l.startsWith("  › "))?.slice(4, 5);
+
+  test("down or j moves down and stops at the last row; up or k moves up; up or k on the first row collapses; all consumed; one redraw per change", async () => {
+    const s = await three();
+    const line = s.status();
+    const r0 = s.requestRenders;
+    expect(s.press(DOWN)).toBe(true);
+    expect(s.requestRenders).toBe(r0 + 1);
+    expect(s.press("j")).toBe(true);
+    expect(selected(s)).toBe("b");
+    expect(s.press(DOWN)).toBe(true);
+    expect(selected(s)).toBe("c");
+    const r1 = s.requestRenders;
+    expect(s.press("j")).toBe(true);
+    expect(s.press(DOWN)).toBe(true);
+    expect(selected(s)).toBe("c");
+    expect(s.requestRenders).toBe(r1);
+    expect(s.press("k")).toBe(true);
+    expect(selected(s)).toBe("b");
+    expect(s.press(UP)).toBe(true);
+    expect(selected(s)).toBe("a");
+    const r2 = s.requestRenders;
+    expect(s.press("k")).toBe(true);
+    expect(s.status()).toBe(line);
+    expect(s.requestRenders).toBe(r2 + 1);
+    expect(s.press(LEFT)).toBe(true);
+    expect(s.press(UP)).toBe(true);
+    expect(s.status()).toBe(line);
+    expect(s.editorKeys).toEqual([]);
+  });
+
+  test("Esc collapses and is consumed", async () => {
+    const s = await three();
+    const line = s.status();
+    s.press(DOWN);
+    s.press(DOWN);
+    expect(s.press(ESC)).toBe(true);
+    expect(s.status()).toBe(line);
+    expect(s.editorKeys).toEqual([]);
+    expect(s.press(DOWN)).toBe(true);
+    expect(selected(s)).toBe("a");
+  });
+
+  test("any other key collapses and reaches the editor unchanged: h is typed, Enter submits", async () => {
+    const s = await three();
+    const line = s.status();
+    s.press(DOWN);
+    expect(s.press("h")).toBe(false);
+    expect(s.status()).toBe(line);
+    s.press(DOWN);
+    expect(s.press(ENTER)).toBe(false);
+    expect(s.status()).toBe(line);
+    expect(s.editorKeys).toEqual(["h", ENTER]);
+  });
+
+  test("a key arriving while the editor has lost focus collapses the roster and passes through", async () => {
+    const s = await three();
+    const line = s.status();
+    s.press(DOWN);
+    s.focused = dialogComponent();
+    expect(s.press(DOWN)).toBe(false);
+    expect(s.status()).toBe(line);
+    expect(s.editorKeys).toEqual([DOWN]);
+  });
+
+  test("a key release passes through and leaves the roster as it is", async () => {
+    const s = await three();
+    s.press(DOWN);
+    const open = s.status();
+    expect(s.press(DOWN_RELEASE)).toBe(false);
+    expect(s.status()).toBe(open);
+    expect(s.editorKeys).toEqual([DOWN_RELEASE]);
+  });
+
+  test("ticks with nothing changing leave the open roster alone", async () => {
+    const s = await three();
+    ws.clock.advance(5000);
+    ws.tick();
+    s.press(DOWN);
+    const open = s.status();
+    expect(open?.startsWith(ROSTER_HEADER)).toBe(true);
+    const renders = s.requestRenders;
+    for (let i = 0; i < 5; i++) {
+      ws.clock.advance(1000);
+      ws.tick();
+    }
+    expect(s.status()).toBe(open);
+    expect(s.requestRenders).toBe(renders);
+  });
+});
+
+describe("AC-R10 opening and closing the roster writes nothing", () => {
+  test("the state file is byte-identical after open, moves, and Esc", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    await s.command("1h --name b x");
+    const file = ws.file(".pi-loop/loops.json");
+    const before = fs.readFileSync(file);
+    const mtime = fs.statSync(file).mtimeMs;
+    expect(s.press(DOWN)).toBe(true);
+    expect(s.press("j")).toBe(true);
+    expect(s.press(ESC)).toBe(true);
+    expect(fs.readFileSync(file).equals(before)).toBe(true);
+    expect(fs.statSync(file).mtimeMs).toBe(mtime);
+  });
+});
+
+describe("AC-R11 the input listener lives from TUI session start to shutdown", () => {
+  test("one subscription per TUI session start, even with no loops; a second start replaces it; shutdown removes it and the widget", async () => {
+    const s = ws.startSession();
+    expect(s.inputListeners).toHaveLength(1);
+    s.emit("session_start");
+    expect(s.inputListeners).toHaveLength(1);
+    await s.command("5m ping");
+    const widgets = s.widgets.length;
+    s.shutdown();
+    expect(s.inputListeners).toHaveLength(0);
+    expect(s.widgets).toHaveLength(widgets + 1);
+    expect(s.widgets[s.widgets.length - 1]).toEqual({ key: "pi-loop", factory: undefined, placement: undefined });
+  });
+
+  test("a shutdown with no widget registered removes nothing", () => {
+    const s = ws.startSession();
+    expect(s.inputListeners).toHaveLength(1);
+    s.shutdown();
+    expect(s.inputListeners).toHaveLength(0);
+    expect(s.widgets).toEqual([]);
+  });
+
+  test("no subscription in rpc, json, or print mode", () => {
+    expect(ws.startSession({ mode: "tui" }).inputListeners).toHaveLength(1);
+    for (const mode of ["rpc", "json", "print"] as const) {
+      const s = ws.startSession({ mode });
+      expect(s.inputListeners).toHaveLength(0);
+      s.shutdown();
+    }
   });
 });

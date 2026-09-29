@@ -1,4 +1,4 @@
-// What the user sees: the status line below the editor, the picker rows, the loop's
+// What the user sees: the status line below the editor, the roster it opens into, the loop's
 // detail panel, the plain-text list line, and how a fire is drawn in the
 // transcript. Everything here is display; nothing here touches state or the
 // conversation.
@@ -12,9 +12,13 @@ type Color = Parameters<Theme["fg"]>[0];
 
 export interface Segment {
   text: string;
-  color: Color;
+  /** No color: drawn in the default text color, with no theme call. */
+  color?: Color;
   bold?: boolean;
 }
+
+/** One widget line: its segments drawn side by side. */
+export type Line = Segment[];
 
 const SEP: Segment = { text: "\u00b7", color: "dim" };
 
@@ -79,29 +83,60 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-function paint(segments: Segment[], theme: Pick<Theme, "fg" | "bold">): string {
-  return segments
+/** The status line's segments as one line, a plain space between each. */
+export function spaced(segments: Segment[]): Line {
+  return segments.flatMap((s, i) => (i === 0 ? [s] : [{ text: " " }, s]));
+}
+
+/** A line's text without color: what change detection compares. */
+export function lineText(line: Line): string {
+  return line.map((s) => s.text).join("");
+}
+
+function paint(line: Line, theme: Pick<Theme, "fg" | "bold">): string {
+  return line
     .map((s) => {
+      if (s.color === undefined) return s.text;
       const colored = theme.fg(s.color, s.text);
       return s.bold ? theme.bold(colored) : colored;
     })
-    .join(" ");
+    .join("");
 }
 
-/** The status line widget: one line, two-space indent, cut to the width it is given. */
-export function statusWidget(line: () => Segment[], theme: Pick<Theme, "fg" | "bold">): Panel {
+/** The widget below the editor: the status line or the roster, each line indented two spaces and cut to the width it is given. */
+export function statusWidget(lines: () => Line[], theme: Pick<Theme, "fg" | "bold">): Panel {
   return {
     render(width) {
-      return [truncateToWidth(`  ${paint(line(), theme)}`, width)];
+      return lines().map((line) => truncateToWidth(`  ${paint(line, theme)}`, width));
     },
     invalidate() {},
   };
 }
 
-/** One picker row: name, status, next, interval, fires. */
-export function pickerRow(loop: Loop, owner: number | undefined): string {
+/** Most loop rows the roster shows at once. */
+const ROSTER_ROWS = 8;
+
+/**
+ * The roster: the header, then one row per loop with the selected one marked,
+ * at most ROSTER_ROWS of them, the window scrolled to keep the selection in view.
+ */
+export function rosterLines(loops: Loop[], owner: number | undefined, selected: number): Line[] {
+  const start = Math.max(0, selected - ROSTER_ROWS + 1);
+  const header: Line = [{ text: "loops", color: "muted" }, { text: " " }, { text: "\u00b7 \u2191\u2193/jk select \u00b7 enter open \u00b7 esc back", color: "dim" }];
+  const rows = loops.slice(start, start + ROSTER_ROWS).map((loop, i): Line => {
+    const marker: Segment = start + i === selected ? { text: "\u203a", color: "accent" } : { text: " " };
+    return [marker, { text: " " }, ...rosterRow(loop, owner)];
+  });
+  return [header, ...rows];
+}
+
+/** One roster row: name, status, next, interval, fires; only the status word is colored. */
+export function rosterRow(loop: Loop, owner: number | undefined): Line {
   const next = loop.paused ? "-" : formatLocal(loop.dueAt).slice(11);
-  return [loop.name.padEnd(10), loopStatus(loop, owner).padEnd(7), `next ${next.padEnd(5)}`, `every ${formatInterval(loop.intervalMs)}`, `#${loop.fires}`].join("  ");
+  const status = loopStatus(loop, owner);
+  const color: Color = loop.paused ? "dim" : owner === undefined ? "success" : "muted";
+  const rest = [`next ${next.padEnd(5)}`, `every ${formatInterval(loop.intervalMs)}`, `#${loop.fires}`].join("  ");
+  return [{ text: `${loop.name.padEnd(10)}  ` }, { text: status, color }, { text: `${" ".repeat(Math.max(0, 7 - status.length))}  ${rest}` }];
 }
 
 function loopStatus(loop: Loop, owner: number | undefined): string {
