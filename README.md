@@ -41,7 +41,7 @@ pi install ./pi-loop
 /loop resume <name>
 ```
 
-In the TUI, both forms open the roster; so does ↓ or ← on an empty prompt editor. The status line expands in place into a header and one row per loop (name, status, next, interval, fires):
+In the TUI, both forms open the roster; so does ↓ or ← on an empty prompt editor. The status line expands in place into a header and one row per loop (name, status, next, interval, fires); at most 8 rows show, and the window scrolls with the selection:
 
 ```
 loops · ↑↓/jk select · enter open · esc back
@@ -80,10 +80,10 @@ The interval phrase is cut out of the text; what remains is the prompt.
 
 ## Status line
 
-While loops exist, one line directly below the prompt editor, above pi's footer:
+While loops exist, and for 5s after the last loop's final fire, one line shows directly below the prompt editor, above pi's footer. Otherwise there is no line.
 
 ```
-1 active loop · next loop-1 02:42 · ↓/← to manage            steady: counts and the earliest due active loop
+1 active loop · next daily-greeting 02:42 · ↓/← to manage    steady: counts and the earliest due active loop
 2 active loops, 1 paused · due fast · ↓/← to manage          fast is overdue and the agent is busy; it fires on settle
 2 active loops · fired fast #6 · ↓/← to manage               for 5s after a fire, then back to next
 2 paused loops · ↓/← to manage                               everything paused
@@ -92,9 +92,9 @@ While loops exist, one line directly below the prompt editor, above pi's footer:
 fired smoke #6                                               the last loop reached --max on that fire; 5s, then no line
 ```
 
-The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the word `next` `muted`, the error suffix `error`, separators, times, and the `↓/← to manage` hint `dim`. No loops, no line. The line is redrawn only when its text changes.
+The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the word `next` `muted`, the error suffix `error`, separators, times, and the `↓/← to manage` hint `dim`. In the due state the whole `due <name>` clause, name included, is `warning`. The line is redrawn only when its text changes.
 
-pi hands a key to the extensions' terminal listeners in the order they registered, and the first one that consumes it keeps it. With pi-loop listed before pi-subagents in settings, pi-subagents' fleet line does not open with ↓/← while loops exist. Listing pi-subagents first in settings lets its fleet line take ↓/← while its agents run, and pi-loop gets the key otherwise.
+pi offers each key to the extensions' terminal listeners in the order they registered, which follows the package order in settings, and the first listener that consumes a key keeps it. pi-loop consumes ↓/← on an empty editor while loops exist, so an extension listed after it, such as pi-subagents, does not get those keys then; listing that extension before pi-loop lets it see them first.
 
 Each fire is one user message:
 
