@@ -259,12 +259,13 @@ export function run(pi: LoopHost, deps: Deps): void {
     session?.stopTicker();
     session?.unsubscribe?.();
     session = undefined;
-    // Interactive sessions only. A -p run has no UI and must not fire loops.
-    if (!ctx.hasUI) return;
+    // TUI sessions only: the ticker, ownership, firing, the widget, and the key listener, loops or not.
+    // Print, json, and RPC get no session whatever their hasUI (RPC has one), so a pi-subagents child
+    // never fires; their /loop commands still write the state file for the TUI owner to fire.
+    if (ctx.mode !== "tui") return;
     const live: Session = { ctx, stopTicker: deps.ticker(() => safely(tick)), lines: [], loops: [] };
     session = live;
-    // The roster exists in the TUI only; the listener is there from the start, loops or not.
-    if (ctx.mode === "tui") live.unsubscribe = ctx.ui.onTerminalInput((data) => onKey(live, data));
+    live.unsubscribe = ctx.ui.onTerminalInput((data) => onKey(live, data));
     render();
   });
 

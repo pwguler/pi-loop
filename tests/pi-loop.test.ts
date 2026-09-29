@@ -440,16 +440,40 @@ describe("AC-6 one owner session per cwd", () => {
     expect(ws.loops()).toHaveLength(1);
   });
 
-  test("a session with no UI never claims or fires", async () => {
+  test("rpc, print, and json sessions never claim, fire, or tick, whatever their hasUI", async () => {
     const a = ws.startSession();
     await a.command("5m ping");
     a.shutdown();
-    const p = ws.startSession({ hasUI: false });
-    ws.clock.advance(5 * MIN);
+    for (const mode of ["rpc", "print", "json"] as const) {
+      for (const hasUI of [true, false]) {
+        const p = ws.startSession({ mode, hasUI });
+        expect(ws.tickers.get(p.pid)).toBeUndefined();
+        for (let i = 0; i < 3; i++) {
+          ws.clock.advance(5 * MIN);
+          ws.tick();
+        }
+        p.settle();
+        expect(p.fires).toHaveLength(0);
+        expect(ws.owner()).toBeUndefined();
+        p.shutdown();
+      }
+    }
+    expect(ws.loops().map((l) => l.fires)).toEqual([1]);
+  });
+
+  test("an rpc /loop creates the loop and fires nothing; a TUI session started afterwards claims and fires it", async () => {
+    const r = ws.startSession({ mode: "rpc", hasUI: true });
+    await r.command("5m x");
     ws.tick();
-    p.settle();
-    expect(p.fires).toHaveLength(0);
+    r.settle();
+    expect(ws.loops().map((l) => [l.name, l.fires])).toEqual([["loop-1", 0]]);
+    expect(r.fires).toHaveLength(0);
     expect(ws.owner()).toBeUndefined();
+    const t = ws.startSession();
+    ws.tick();
+    expect(t.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:00]\nx"]);
+    expect(ws.owner()).toEqual({ pid: t.pid, sessionId: t.sessionId, claimedAt: T0 });
+    expect(r.fires).toHaveLength(0);
   });
 });
 
@@ -1731,13 +1755,13 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
     expect(s.status()).toBe(`  1 active loop · fired loop-1 #1${HINT}`);
   });
 
-  test("TUI without a started session, which pi never produces: the command fails loudly instead of opening nothing", async () => {
+  test("TUI without a started session, reachable only after shutdown: the command fails loudly instead of opening nothing", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     s.shutdown();
-    const orphan = ws.startSession({ hasUI: false });
-    await expect(orphan.command("")).rejects.toThrow("pi-loop: no session to open the roster in");
-    expect(orphan.notices).toEqual([]);
+    s.clearNotices();
+    await expect(s.command("")).rejects.toThrow("pi-loop: no session to open the roster in");
+    expect(s.notices).toEqual([]);
   });
 
   test("rpc (with a UI), json, print: both forms print one text line per loop, or no loops, and open nothing", async () => {
