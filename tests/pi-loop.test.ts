@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Panel } from "../extensions/pi-loop/index.ts";
-import { dialogComponent, editorComponent, Workspace, type Session } from "./mock-pi.ts";
+import { dialogComponent, editorComponent, TEST_MODEL, Workspace, type Session } from "./mock-pi.ts";
 
 // A fixed instant in local time so header and list output are asserted
 // without timezone math: 2026-09-06 10:00 local.
@@ -1962,6 +1962,256 @@ describe("AC-R11 the input listener lives from TUI session start to shutdown", (
     for (const mode of ["rpc", "json", "print"] as const) {
       const s = ws.startSession({ mode });
       expect(s.inputListeners).toHaveLength(0);
+      s.shutdown();
+    }
+  });
+});
+
+// docs/specs/pi-loop-naming.md: a loop created without --name is named by the session's model.
+
+const CHOSEN = /^[a-z0-9][a-z0-9._-]*$/;
+const LONG = "check the open pull requests for stale reviews";
+
+/** A session with a current model, as pi gives one to /loop. */
+function modelSession(mode: Session["mode"] = "tui"): Session {
+  const s = ws.startSession({ mode });
+  s.model = TEST_MODEL;
+  return s;
+}
+
+/** Create a loop and return its name, the create notice, and how many model calls it made. */
+async function create(s: Session, args: string): Promise<{ name: string | undefined; notice: string; calls: number }> {
+  const before = s.modelCalls.length;
+  s.clearNotices();
+  await s.command(args);
+  return { name: ws.loops().at(-1)?.name, notice: s.lastNotice(), calls: s.modelCalls.length - before };
+}
+
+describe("AC-N1 the name is settled before the loop is saved and fired", () => {
+  test("the first fire's header, the create notice, and loops.json carry the model's name", async () => {
+    const s = modelSession();
+    s.modelAnswer = { text: "stale-reviews" };
+    await s.command(`5m ${LONG}`);
+    expect(s.fires.map((f) => f.text)).toEqual([`[loop stale-reviews #1 2026-09-06 10:00]\n${LONG}`]);
+    expect(s.notices).toEqual([{ message: "created stale-reviews, every 5m", type: "info" }]);
+    expect(ws.loops().map((l) => l.name)).toEqual(["stale-reviews"]);
+  });
+
+  test("while the model is still answering nothing is saved, fired, or announced under a provisional name", async () => {
+    const s = modelSession();
+    s.modelAnswer = "until-aborted";
+    const pending = s.command(`5m ${LONG}`);
+    await s.flush();
+    expect(ws.loops()).toEqual([]);
+    expect(s.fires).toEqual([]);
+    expect(s.notices).toEqual([]);
+    ws.expireNaming();
+    await pending;
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 10:00]"]);
+  });
+});
+
+describe("AC-N2 the first rule that applies names the loop", () => {
+  test("an @file prompt is named after the file, cleaned like an answer, with no model call", async () => {
+    const s = modelSession();
+    fs.mkdirSync(ws.file("notes"));
+    const cases: Array<[string, string]> = [
+      ["@prompt.md", "prompt"],
+      ["@notes/Daily.md", "daily"],
+      ["@weekly-dependency-report.md", "weekly-dependenc"],
+      ["@notes/Daily+Log.md", "dailylog"],
+      ["@.env", "env"],
+    ];
+    for (const [token, name] of cases) {
+      const made = await create(s, `5m ${token}`);
+      expect([token, made.name, made.notice, made.calls]).toEqual([token, name, `created ${name}, every 5m`, 0]);
+    }
+  });
+
+  test("a text prompt of at most 3 words that makes a valid name of at most 16 characters is used as is, with no model call", async () => {
+    const s = modelSession();
+    const cases: Array<[string, string]> = [
+      ["ping", "ping"],
+      ["check build", "check-build"],
+      ["Check The Build", "check-the-build"],
+    ];
+    for (const [prompt, name] of cases) {
+      const made = await create(s, `5m ${prompt}`);
+      expect([prompt, made.name, made.calls]).toEqual([prompt, name, 0]);
+    }
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual([
+      "[loop ping #1 2026-09-06 10:00]",
+      "[loop check-build #1 2026-09-06 10:00]",
+      "[loop check-the-build #1 2026-09-06 10:00]",
+    ]);
+  });
+
+  test("any other text prompt goes to the model: more than 3 words, longer than 16, or not a valid name", async () => {
+    const s = modelSession();
+    s.modelAnswer = { text: "named" };
+    for (const prompt of [LONG, "check the buildbot", "ping!", "run the test suite"]) {
+      const made = await create(s, `5m ${prompt}`);
+      expect([prompt, made.calls]).toEqual([prompt, 1]);
+      await s.command(`stop ${made.name}`);
+    }
+  });
+
+  test("--name is taken as typed and the model is never called", async () => {
+    const s = modelSession();
+    s.modelAnswer = { text: "named" };
+    const made = await create(s, `5m --name nightly ${LONG}`);
+    expect([made.name, made.notice, made.calls]).toEqual(["nightly", "created nightly, every 5m", 0]);
+    expect(s.fires[0]?.text.split("\n")[0]).toBe("[loop nightly #1 2026-09-06 10:00]");
+  });
+});
+
+describe("AC-N3 the naming call", () => {
+  test("goes to the session's model with one user message stating the rule then the prompt, maxTokens 256, no retries, an 8 s timeout", async () => {
+    const s = modelSession();
+    s.modelAnswer = { text: "stale-reviews" };
+    await s.command(`5m ${LONG}`);
+    expect(s.modelCalls).toHaveLength(1);
+    const call = s.modelCalls[0];
+    expect(call?.model).toBe(TEST_MODEL);
+    expect(call?.context.systemPrompt).toBeUndefined();
+    expect(call?.context.tools).toBeUndefined();
+    expect(call?.context.messages).toHaveLength(1);
+    const message = call?.context.messages[0];
+    expect(message?.role).toBe("user");
+    const content = message?.role === "user" ? message.content : undefined;
+    const text = typeof content === "string" ? content : content?.map((c) => (c.type === "text" ? c.text : "")).join("");
+    expect(text).toContain("1 to 3 lowercase words joined by hyphens, at most 16 characters");
+    expect(text).toContain("only");
+    expect(text?.endsWith(LONG)).toBe(true);
+    expect(call?.options?.maxTokens).toBe(256);
+    expect(call?.options?.maxRetries).toBe(0);
+    expect(call?.options?.timeoutMs).toBe(8000);
+    expect(call?.options?.signal).toBe(ws.namingDeadlines[0]?.signal);
+  });
+});
+
+describe("AC-N4 the model's answer is cleaned into a name", () => {
+  test("first non-empty line, lowercased, spaces and underscores to hyphens, other characters dropped, trimmed, cut to 16, trimmed again", async () => {
+    const s = modelSession();
+    const cases: Array<[string, string]> = [
+      ["Stale PR Review\nextra", "stale-pr-review"],
+      ["\n  \n  ping-me  \nsecond", "ping-me"],
+      ["__Build!!Check__", "buildcheck"],
+      ["`deploy`", "deploy"],
+      ["Name: nightly.run", "name-nightly.run"],
+      [".hidden.", "hidden"],
+      ["check-the-open-pull-requests", "check-the-open-p"],
+      ["check-the-build-status", "check-the-build"],
+      ["Ünïcode Name", "ncode-name"],
+    ];
+    for (const [answer, name] of cases) {
+      s.modelAnswer = { text: answer };
+      const made = await create(s, `5m ${LONG}`);
+      expect([answer, made.name]).toEqual([answer, name]);
+      expect(made.name).toMatch(CHOSEN);
+      expect(made.name?.length).toBeLessThanOrEqual(16);
+      await s.command(`stop ${made.name}`);
+    }
+  });
+});
+
+describe("AC-N5 no usable name falls back to loop-<k>", () => {
+  test("with no current model the name is loop-<k>, the notice is today's, and nothing is called", async () => {
+    const s = ws.startSession();
+    const made = await create(s, `5m ${LONG}`);
+    expect([made.name, made.notice, made.calls]).toEqual(["loop-1", "created loop-1, every 5m", 0]);
+    expect((await create(s, "5m ping")).name).toBe("loop-2");
+    expect((await create(s, "5m @prompt.md")).name).toBe("loop-3");
+  });
+
+  test("an @file name that cleans to nothing gives loop-<k> with today's notice and no call", async () => {
+    const s = modelSession();
+    const made = await create(s, "5m @+++.md");
+    expect([made.name, made.notice, made.calls]).toEqual(["loop-1", "created loop-1, every 5m", 0]);
+  });
+
+  test("a throw, an error or abort stop reason, or an answer that cleans to nothing gives loop-<k> and says why", async () => {
+    const s = modelSession();
+    const cases: Array<[Session["modelAnswer"], string]> = [
+      [{ throws: new Error("boom") }, "failed"],
+      [{ stopReason: "error" }, "failed"],
+      [{ stopReason: "aborted" }, "failed"],
+      [{ text: "!!!" }, "gave no usable name"],
+      [{ text: " \n\t\n" }, "gave no usable name"],
+      [{ text: "--__--" }, "gave no usable name"],
+    ];
+    for (const [answer, why] of cases) {
+      s.modelAnswer = answer;
+      const made = await create(s, `5m ${LONG}`);
+      expect([why, made.name, made.notice, made.calls]).toEqual([why, "loop-1", `created loop-1, every 5m · naming ${why}`, 1]);
+      await s.command("stop loop-1");
+    }
+    // bun fails the test on an unhandled rejection; let a late one land inside it.
+    await s.flush();
+  });
+
+  test("a call past 8 seconds is abandoned even when the provider ignores the abort, and its late rejection is handled", async () => {
+    const s = modelSession();
+    for (const answer of ["never", "until-aborted"] as const) {
+      s.modelAnswer = answer;
+      const pending = s.command(`5m ${LONG}`);
+      await s.flush();
+      expect(s.fires).toEqual([]);
+      ws.expireNaming();
+      await pending;
+      expect([answer, s.lastNotice()]).toEqual([answer, "created loop-1, every 5m · naming timed out"]);
+      expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 10:00]"]);
+      await s.command("stop loop-1");
+      s.fires.length = 0;
+    }
+    // bun fails the test on an unhandled rejection; let a late one land inside it.
+    await s.flush();
+  });
+});
+
+describe("AC-N6 a chosen name already taken gets the lowest free -2, -3", () => {
+  test("repeats of a short prompt count up and reuse the lowest free suffix", async () => {
+    const s = modelSession();
+    await s.command("5m ping");
+    await s.command("10m ping");
+    await s.command("15m ping");
+    expect(ws.loops().map((l) => l.name)).toEqual(["ping", "ping-2", "ping-3"]);
+    await s.command("stop ping-2");
+    const made = await create(s, "5m ping");
+    expect([made.name, made.notice]).toEqual(["ping-2", "created ping-2, every 5m"]);
+    expect(s.fires.at(-1)?.text.split("\n")[0]).toBe("[loop ping-2 #1 2026-09-06 10:00]");
+  });
+
+  test("the base is cut so the whole name stays within 16 characters, never ending the base in . _ -", async () => {
+    const s = modelSession();
+    s.modelAnswer = { text: "check-the-open-p" };
+    await s.command(`5m ${LONG}`);
+    await s.command(`10m ${LONG}`);
+    s.modelAnswer = { text: "weekly-report-a" };
+    await s.command(`5m ${LONG}`);
+    await s.command(`10m ${LONG}`);
+    expect(ws.loops().map((l) => l.name)).toEqual(["check-the-open-p", "check-the-open-2", "weekly-report-a", "weekly-report-2"]);
+    for (const l of ws.loops()) expect(l.name.length).toBeLessThanOrEqual(16);
+  });
+});
+
+describe("AC-N8 the same naming in every mode", () => {
+  test("rpc, json, and print sessions name loops as the TUI does", async () => {
+    for (const mode of ["rpc", "json", "print"] as const) {
+      const s = modelSession(mode);
+      s.modelAnswer = { text: "stale-reviews" };
+      const short = await create(s, "5m ping");
+      const long = await create(s, `5m ${LONG}`);
+      expect([mode, short.name, short.calls, long.name, long.notice, long.calls]).toEqual([
+        mode,
+        "ping",
+        0,
+        "stale-reviews",
+        "created stale-reviews, every 5m",
+        1,
+      ]);
+      await s.command("stop ping");
+      await s.command("stop stale-reviews");
       s.shutdown();
     }
   });

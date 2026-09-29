@@ -9,6 +9,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { Api, AssistantMessage, Context, Model, StopReason } from "@earendil-works/pi-ai";
 import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/pi-loop/index.ts";
 
 export interface Fire {
@@ -30,6 +31,55 @@ export interface WidgetCall {
 
 type WidgetFactory = Exclude<Parameters<LoopContext["ui"]["setWidget"]>[1], undefined>;
 type WidgetTheme = Parameters<WidgetFactory>[1];
+
+type Complete = LoopContext["modelRegistry"]["complete"];
+export type ModelOptions = Parameters<Complete>[2];
+
+/** One ctx.modelRegistry.complete call, as the extension made it. */
+export interface ModelCall {
+  model: Model<Api>;
+  context: Context;
+  options: ModelOptions;
+}
+
+/**
+ * How the scripted model answers: with text, with an error or abort stop
+ * reason, by throwing, by never settling until its signal aborts (then it
+ * rejects), or by never settling at all, deaf to the signal.
+ */
+export type ModelAnswer =
+  | { text: string }
+  | { stopReason: Extract<StopReason, "error" | "aborted"> }
+  | { throws: Error }
+  | "until-aborted"
+  | "never";
+
+/** A session model for the tests that set one; ctx.model is undefined by default. */
+export const TEST_MODEL: Model<Api> = {
+  id: "test-model",
+  name: "Test model",
+  api: "openai-completions",
+  provider: "test",
+  baseUrl: "http://localhost",
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 100_000,
+  maxTokens: 4096,
+};
+
+function assistant(text: string, stopReason: StopReason): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: TEST_MODEL.api,
+    provider: TEST_MODEL.provider,
+    model: TEST_MODEL.id,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason,
+    timestamp: 0,
+  };
+}
 
 /** Tags instead of ANSI, so a test can see where each color lands. */
 const theme = {
@@ -69,6 +119,8 @@ export class Workspace {
   readonly alive = new Set<number>();
   /** Registered tickers by pid; a kill() drops them, a shutdown stops them. */
   readonly tickers = new Map<number, Set<() => void>>();
+  /** Every naming deadline started, in order; expireNaming() passes them all. */
+  readonly namingDeadlines: AbortController[] = [];
   private nextPid = 1000;
 
   constructor(now: number) {
@@ -96,6 +148,11 @@ export class Workspace {
     return JSON.parse(fs.readFileSync(p, "utf8")) as OwnerFile;
   }
 
+  /** The 8 seconds of every naming deadline started so far pass now. */
+  expireNaming(): void {
+    for (const c of this.namingDeadlines) c.abort();
+  }
+
   /** Run every registered ticker once, in registration order. */
   tick(): void {
     for (const set of this.tickers.values()) for (const fn of set) fn();
@@ -114,6 +171,11 @@ export class Workspace {
         return () => {
           set.delete(fn);
         };
+      },
+      namingDeadline: () => {
+        const c = new AbortController();
+        ws.namingDeadlines.push(c);
+        return c.signal;
       },
     };
   }
@@ -173,6 +235,12 @@ export class Session implements LoopHost {
   confirmImpl: (title: string, message: string) => boolean = () => false;
   /** Drives a ctx.ui.custom panel: read its lines, press keys. Default presses Esc. */
   customImpl: (panel: Panel) => void = (panel) => panel.handleInput?.("\x1b");
+  /** The session's current model; none by default, so names fall back to loop-<k>. */
+  model: Model<Api> | undefined;
+  /** Every ctx.modelRegistry.complete call. */
+  readonly modelCalls: ModelCall[] = [];
+  /** Scripted answer of the model to every call. */
+  modelAnswer: ModelAnswer = { text: "unscripted" };
   readonly ctx: LoopContext;
   idle = true;
   hasUI: boolean;
@@ -195,6 +263,24 @@ export class Session implements LoopHost {
       },
       get hasUI() {
         return self.hasUI;
+      },
+      get model() {
+        return self.model;
+      },
+      modelRegistry: {
+        complete(model, context, options) {
+          self.modelCalls.push({ model, context, options });
+          const answer = self.modelAnswer;
+          if (answer === "never") return new Promise<AssistantMessage>(() => {});
+          if (answer === "until-aborted") {
+            return new Promise<AssistantMessage>((_resolve, reject) => {
+              options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+          }
+          if ("throws" in answer) throw answer.throws;
+          if ("stopReason" in answer) return Promise.resolve(assistant("", answer.stopReason));
+          return Promise.resolve(assistant(answer.text, "stop"));
+        },
       },
       sessionManager: historyFree(sessionId),
       isIdle: () => self.idle,

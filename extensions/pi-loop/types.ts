@@ -2,6 +2,7 @@
 // the loop record it stores. The default export in index.ts is typed against
 // pi's ExtensionAPI, so tsc checks that pi still satisfies LoopHost.
 
+import type { Api, AssistantMessage, Context, Model, ModelsApiStreamOptions } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 export interface Panel {
@@ -25,6 +26,12 @@ export interface LoopContext {
   mode: "tui" | "rpc" | "json" | "print";
   hasUI: boolean;
   sessionManager: { getSessionId(): string };
+  /** The session's current model; undefined when none is set. */
+  model: Model<Api> | undefined;
+  /** A side completion outside the conversation, used only to name a loop. */
+  modelRegistry: {
+    complete(model: Model<Api>, context: Context, options?: ModelsApiStreamOptions<Api>): Promise<AssistantMessage>;
+  };
   isIdle(): boolean;
   ui: {
     notify(message: string, type?: "info" | "warning" | "error"): void;
@@ -78,6 +85,8 @@ export interface Deps {
   isPidAlive(pid: number): boolean;
   /** Start a periodic tick; returns the stop function. */
   ticker(fn: () => void): () => void;
+  /** Start the 8-second naming deadline; its signal aborts when the time is up. */
+  namingDeadline(): AbortSignal;
 }
 
 export type PromptSource = { kind: "text"; text: string } | { kind: "file"; path: string };

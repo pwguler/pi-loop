@@ -8,6 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { defaultName, parseCommand } from "./command.ts";
 import { formatInterval } from "./interval.ts";
+import { chooseName, NAMING_TIMEOUT_MS, namingNote, uniqueName, type Chosen } from "./naming.ts";
 import { claimOwner, loadLoops, message, otherOwner, readPrompt, releaseOwner, saveLoops } from "./state.ts";
 import type { Deps, Loop, LoopContext, LoopHost, WidgetTui } from "./types.ts";
 import {
@@ -361,7 +362,10 @@ export function run(pi: LoopHost, deps: Deps): void {
     }
 
     if (cmd.kind === "create") {
-      const name = cmd.name ?? defaultName(loops);
+      // Without --name the name is settled first, so the save, the notice, and the first fire all carry it.
+      const chosen: Chosen | undefined =
+        cmd.name === undefined ? await chooseName(cmd.prompt, ctx, deps.namingDeadline, now) : undefined;
+      const name = cmd.name ?? (chosen?.ok ? uniqueName(chosen.name, loops) : defaultName(loops));
       if (loops.some((l) => l.name === name)) {
         ctx.ui.notify(`loop ${name} already exists`, "error");
         return;
@@ -379,7 +383,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       loops.push(loop);
       saveLoops(ctx.cwd, loops);
       const owner = otherOwner(ctx, deps);
-      ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}`, "info");
+      ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}${chosen ? namingNote(chosen) : ""}`, "info");
       tick();
     }
   }
@@ -447,5 +451,6 @@ function realDeps(): Deps {
       id.unref();
       return () => clearInterval(id);
     },
+    namingDeadline: () => AbortSignal.timeout(NAMING_TIMEOUT_MS),
   };
 }
