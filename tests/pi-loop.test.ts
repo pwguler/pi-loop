@@ -1138,7 +1138,38 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     b.press(DOWN);
     expect(b.styled()?.split("\n").slice(1)).toEqual([
       `    slow        <muted>owned by pid ${a.pid}</muted>  next 12:00  every 2h  #1`,
-      `  <accent>›</accent> fast        <dim>paused</dim>   next -      every 5m  #1`,
+      `  <accent>›</accent> fast        <dim>paused</dim>             next -      every 5m  #1`,
+    ]);
+  });
+
+  test("columns line up: the name column fits the longest name, 10 to 16 wide, a longer name cut to 15 and …; the status column fits the longest status", async () => {
+    const a = ws.startSession();
+    await a.command("2h --name nightly-build x");
+    await a.command("5m --name a y");
+    a.press(DOWN);
+    expect(a.status()?.split("\n").slice(1)).toEqual([
+      "  › nightly-build  active   next 12:00  every 2h  #1",
+      "    a              active   next 10:05  every 5m  #1",
+    ]);
+    a.press(ESC);
+    await a.command("1h --name sixteen-chars-ok z");
+    await a.command("1h --name seventeen-chars-x w");
+    await a.command("pause a");
+    a.press(DOWN);
+    expect(a.status()?.split("\n").slice(1)).toEqual([
+      "  › nightly-build     active   next 12:00  every 2h  #1",
+      "    a                 paused   next -      every 5m  #1",
+      "    sixteen-chars-ok  active   next 11:00  every 1h  #1",
+      "    seventeen-chars…  active   next 11:00  every 1h  #1",
+    ]);
+    const b = ws.startSession();
+    ws.tick();
+    b.press(DOWN);
+    expect(b.status()?.split("\n").slice(1)).toEqual([
+      `  › nightly-build     owned by pid ${a.pid}  next 12:00  every 2h  #1`,
+      "    a                 paused             next -      every 5m  #1",
+      `    sixteen-chars-ok  owned by pid ${a.pid}  next 11:00  every 1h  #1`,
+      `    seventeen-chars…  owned by pid ${a.pid}  next 11:00  every 1h  #1`,
     ]);
   });
 
@@ -1168,8 +1199,8 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     const widget = factory({ requestRender() {} }, ansi);
     expect(widget.render(200).map(stripAnsi)).toEqual([
       ROSTER_HEADER,
-      "  › a-rather-long-loop-name  active   next 12:00  every 2h  #1",
-      "    b           active   next 10:05  every 5m  #1",
+      "  › a-rather-long-l…  active   next 12:00  every 2h  #1",
+      "    b                 active   next 10:05  every 5m  #1",
     ]);
     for (let width = 1; width <= 80; width++) {
       const lines = widget.render(width);
@@ -1377,7 +1408,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     expect(styled[styled.length - 1]).toBe(`<border>${"─".repeat(60)}</border>`);
   });
 
-  test("while the panel is open every key passes, the roster stays open through focus loss and ticks, and a second Enter opens nothing", async () => {
+  test("while the panel is open every key passes, the widget draws nothing through focus loss and ticks, a second Enter opens nothing, and the roster returns on close", async () => {
     const s = ws.startSession();
     await s.command("1h --name a x");
     await s.command("1h --name b y");
@@ -1385,15 +1416,20 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     const p = hold(s);
     s.press(DOWN);
     s.press("j");
+    const open = s.status();
+    const widgets = s.widgets.length;
     expect(s.press(ENTER)).toBe(true);
     expect(p.opened()).toBe(1);
-    const open = s.status();
+    expect(s.status()).toBe("");
+    const renders = s.requestRenders;
     s.focused = dialogComponent();
     for (const key of [ENTER, DOWN, "j", ESC, "h"]) expect(s.press(key)).toBe(false);
     ws.clock.advance(1000);
     ws.tick();
     expect(p.opened()).toBe(1);
-    expect(s.status()).toBe(open);
+    expect(s.status()).toBe("");
+    expect(s.requestRenders).toBe(renders);
+    expect(s.widgets).toHaveLength(widgets);
     p.key(ESC);
     s.focused = editorComponent();
     await s.flush();
@@ -1421,6 +1457,24 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     p.key(ESC);
     await s.flush();
     expect(selectedName(s)).toBe("a");
+  });
+
+  test("every loop gone while the panel is open removes the widget, and closing the panel draws nothing", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    const p = hold(s);
+    s.press(DOWN);
+    s.press(ENTER);
+    expect(s.status()).toBe("");
+    await s.command("stop a");
+    expect(s.status()).toBeUndefined();
+    expect(s.widgets[s.widgets.length - 1]?.factory).toBeUndefined();
+    const widgets = s.widgets.length;
+    p.key(ESC);
+    await s.flush();
+    expect(s.status()).toBeUndefined();
+    expect(s.widgets).toHaveLength(widgets);
+    expect(s.press(DOWN)).toBe(false);
   });
 
   test("a failing panel flow is logged, never left unhandled, and the roster works again", async () => {
@@ -1461,8 +1515,8 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     try {
       panel(s, ["p"]);
       s.press(DOWN);
-      s.failNextRender = new Error("render boom");
       s.press(ENTER);
+      s.failNextRender = new Error("render boom");
       await s.flush();
       expect(ws.loops()[0]?.paused).toBe(true);
       expect(errors).toEqual(["pi-loop: render boom"]);

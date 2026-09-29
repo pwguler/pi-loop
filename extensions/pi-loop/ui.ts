@@ -116,27 +116,40 @@ export function statusWidget(lines: () => Line[], theme: Pick<Theme, "fg" | "bol
 /** Most loop rows the roster shows at once. */
 const ROSTER_ROWS = 8;
 
+/** The roster's name column: as wide as the longest name, within these bounds; a longer name is cut to fit, ending in …. */
+const NAME_MIN = 10;
+const NAME_MAX = 16;
+
+/** The roster's status column is as wide as the longest status, at least this. */
+const STATUS_MIN = 7;
+
 /**
  * The roster: the header, then one row per loop with the selected one marked,
  * at most ROSTER_ROWS of them, the window scrolled to keep the selection in view.
+ * Columns are sized over every loop, not the window, so they hold still while scrolling.
  */
 export function rosterLines(loops: Loop[], owner: number | undefined, selected: number): Line[] {
   const start = Math.max(0, selected - ROSTER_ROWS + 1);
+  const widths = {
+    name: Math.min(NAME_MAX, Math.max(NAME_MIN, ...loops.map((l) => l.name.length))),
+    status: Math.max(STATUS_MIN, ...loops.map((l) => loopStatus(l, owner).length)),
+  };
   const header: Line = [{ text: "loops", color: "muted" }, { text: " " }, { text: "\u00b7 \u2191\u2193/jk select \u00b7 enter open \u00b7 esc back", color: "dim" }];
   const rows = loops.slice(start, start + ROSTER_ROWS).map((loop, i): Line => {
     const marker: Segment = start + i === selected ? { text: "\u203a", color: "accent" } : { text: " " };
-    return [marker, { text: " " }, ...rosterRow(loop, owner)];
+    return [marker, { text: " " }, ...rosterRow(loop, owner, widths)];
   });
   return [header, ...rows];
 }
 
 /** One roster row: name, status, next, interval, fires; only the status word is colored. */
-function rosterRow(loop: Loop, owner: number | undefined): Line {
+function rosterRow(loop: Loop, owner: number | undefined, widths: { name: number; status: number }): Line {
   const next = loop.paused ? "-" : formatLocal(loop.dueAt).slice(11);
   const status = loopStatus(loop, owner);
   const color: Color = loop.paused ? "dim" : owner === undefined ? "success" : "muted";
+  const name = loop.name.length > NAME_MAX ? `${loop.name.slice(0, NAME_MAX - 1)}\u2026` : loop.name;
   const rest = [`next ${next.padEnd(5)}`, `every ${formatInterval(loop.intervalMs)}`, `#${loop.fires}`].join("  ");
-  return [{ text: `${loop.name.padEnd(10)}  ` }, { text: status, color }, { text: `${" ".repeat(Math.max(0, 7 - status.length))}  ${rest}` }];
+  return [{ text: `${name.padEnd(widths.name)}  ` }, { text: status, color }, { text: `${" ".repeat(widths.status - status.length)}  ${rest}` }];
 }
 
 function loopStatus(loop: Loop, owner: number | undefined): string {

@@ -41,7 +41,7 @@ interface Session {
   reported?: string;
   /** The widget's text as last drawn, every line, so the screen is touched only on change. */
   status?: string;
-  /** The lines the widget draws: the status line, or the roster while it is open. */
+  /** The lines the widget draws: the status line, the roster while it is open, or none while a loop's panel is open. */
   lines: Line[];
   /** The loops, their other owner, and the status line as of the last render; keys draw from these, never from the state file. */
   loops: Loop[];
@@ -138,7 +138,9 @@ export function run(pi: LoopHost, deps: Deps): void {
    * Draw the status line, or the roster while it is open, from the last
    * render's cache, only when the text changes: register the widget when it
    * first has content, redraw it through its tui while it keeps content,
-   * remove it when there is nothing to show. The roster closes when no loops
+   * remove it when there is nothing to show. While a loop's panel is open the
+   * widget stays registered and draws no lines, as pi-subagents' fleet line
+   * does under its inspector. The roster closes when no loops
    * remain; a selected loop that is gone gives way to the row now at its
    * index, or the last row.
    */
@@ -153,9 +155,11 @@ export function run(pi: LoopHost, deps: Deps): void {
     }
     const lines = !live.segments
       ? undefined
-      : live.roster
-        ? rosterLines(live.loops, live.owner, live.roster.index)
-        : [spaced(live.segments)];
+      : live.panelOpen
+        ? []
+        : live.roster
+          ? rosterLines(live.loops, live.owner, live.roster.index)
+          : [spaced(live.segments)];
     const text = lines?.map(lineText).join("\n");
     if (text === live.status) return;
     live.status = text;
@@ -234,13 +238,15 @@ export function run(pi: LoopHost, deps: Deps): void {
   }
 
   /**
-   * Open a loop's panel from the roster without waiting for it: keys pass to the
-   * panel until it closes, then the roster is drawn again from the state file.
+   * Open a loop's panel from the roster without waiting for it: the widget
+   * draws nothing at once, keys pass to the panel until it closes, then the
+   * roster is drawn again from the state file.
    * A session that ended meanwhile is left alone, since render draws only the
    * current one; a failure is logged.
    */
   function openPanel(live: Session, loop: Loop): void {
     live.panelOpen = true;
+    draw(live);
     detail(live.ctx, loop, live.owner, () => session === live)
       .catch((e: unknown) => console.error(`pi-loop: ${message(e)}`))
       .finally(() => {
