@@ -37,7 +37,6 @@ export interface LoopContext {
     /** Sees every terminal key before the editor; {consume:true} stops it there. Returns the unsubscribe. */
     onTerminalInput(handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void;
     getEditorText(): string;
-    select(title: string, options: string[]): Promise<string | undefined>;
     confirm(title: string, message: string): Promise<boolean>;
     custom<T>(
       factory: (

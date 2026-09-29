@@ -17,7 +17,6 @@ import {
   formatLocal,
   lineText,
   rosterLines,
-  rosterRow,
   spaced,
   statusLine,
   statusWidget,
@@ -284,7 +283,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   });
 
   pi.registerCommand("loop", {
-    description: "Fire a prompt on an interval: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>; /loop (or list) picks a loop; /loop stop | pause | resume <name>",
+    description: "Fire a prompt on an interval: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>; /loop (or list) opens the roster; /loop stop | pause | resume <name>",
     handler: async (args, ctx) => {
       await handle(args, ctx);
       render();
@@ -306,14 +305,18 @@ export function run(pi: LoopHost, deps: Deps): void {
     const loops = loaded.value;
     const cmd = parsed.value;
 
-    // /loop and /loop list: the picker where there is a UI, one text line per loop where there is not.
+    // /loop and /loop list: the roster, on its first row, in the TUI; one text line per loop in every other
+    // mode, RPC included, since only the TUI has the widget's keys. The command's render draws it.
     if (cmd.kind === "list") {
-      if (ctx.hasUI) {
-        await picker(ctx);
+      const first = loops[0];
+      if (ctx.mode === "tui" && first) {
+        // A TUI session always has UI, so session_start has made one; missing, it is a bug to surface, not hide.
+        if (!session) throw new Error("pi-loop: no session to open the roster in");
+        session.roster = { selected: first.name, index: 0 };
         return;
       }
       const owner = otherOwner(ctx, deps);
-      ctx.ui.notify(loops.length === 0 ? "no loops" : loops.map((l) => formatLoop(l, owner)).join("\n"), "info");
+      ctx.ui.notify(first ? loops.map((l) => formatLoop(l, owner)).join("\n") : "no loops", "info");
       return;
     }
 
@@ -371,29 +374,6 @@ export function run(pi: LoopHost, deps: Deps): void {
       const owner = otherOwner(ctx, deps);
       ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}`, "info");
       tick();
-    }
-  }
-
-  /**
-   * /loop and /loop list in a UI session: pi's built-in picker for the list;
-   * Enter opens the loop's detail panel, where p pauses or resumes, x stops,
-   * escape or ctrl+c goes back. Every action runs the typed command, so the
-   * state file, the notice, and the status line update the same way.
-   */
-  async function picker(ctx: LoopContext): Promise<void> {
-    for (;;) {
-      const loaded = loadLoops(ctx.cwd);
-      if (!loaded.ok) {
-        ctx.ui.notify(loaded.error, "error");
-        return;
-      }
-      const loops = loaded.value;
-      const owner = otherOwner(ctx, deps);
-      const rows = loops.map((l) => lineText(rosterRow(l, owner)));
-      const picked = await ctx.ui.select("loops", rows.length === 0 ? ["no loops"] : rows);
-      const loop = picked === undefined ? undefined : loops[rows.indexOf(picked)];
-      if (!loop) return;
-      await detail(ctx, loop, owner, () => true);
     }
   }
 

@@ -167,31 +167,32 @@ export class Session implements LoopHost {
   editorText = "";
   /** What the widget's tui reports as focused; the editor by default. */
   focused: unknown = editorComponent();
-  /** Every ctx.ui.select call: title and rows. */
-  readonly selects: Array<{ title: string; options: string[] }> = [];
   /** Every ctx.ui.confirm call. */
   readonly confirms: Array<{ title: string; message: string }> = [];
-  /** Scripted answers: what the user picks in a select (undefined = Esc), and what they answer to confirm. */
-  selectImpl: (title: string, options: string[]) => string | undefined = () => undefined;
+  /** Scripted answer: what the user answers to confirm. */
   confirmImpl: (title: string, message: string) => boolean = () => false;
   /** Drives a ctx.ui.custom panel: read its lines, press keys. Default presses Esc. */
   customImpl: (panel: Panel) => void = (panel) => panel.handleInput?.("\x1b");
   readonly ctx: LoopContext;
   idle = true;
   hasUI: boolean;
+  mode: LoopContext["mode"];
 
   constructor(
     readonly ws: Workspace,
     readonly pid: number,
     readonly sessionId: string,
     hasUI: boolean,
-    readonly mode: LoopContext["mode"],
+    mode: LoopContext["mode"],
   ) {
     const self = this;
     this.hasUI = hasUI;
+    this.mode = mode;
     this.ctx = {
       cwd: ws.cwd,
-      mode,
+      get mode() {
+        return self.mode;
+      },
       get hasUI() {
         return self.hasUI;
       },
@@ -215,10 +216,6 @@ export class Session implements LoopHost {
           };
         },
         getEditorText: () => self.editorText,
-        async select(title: string, options: string[]) {
-          self.selects.push({ title, options });
-          return self.selectImpl(title, options);
-        },
         async confirm(title: string, message: string) {
           self.confirms.push({ title, message });
           return self.confirmImpl(title, message);

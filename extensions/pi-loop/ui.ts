@@ -131,7 +131,7 @@ export function rosterLines(loops: Loop[], owner: number | undefined, selected: 
 }
 
 /** One roster row: name, status, next, interval, fires; only the status word is colored. */
-export function rosterRow(loop: Loop, owner: number | undefined): Line {
+function rosterRow(loop: Loop, owner: number | undefined): Line {
   const next = loop.paused ? "-" : formatLocal(loop.dueAt).slice(11);
   const status = loopStatus(loop, owner);
   const color: Color = loop.paused ? "dim" : owner === undefined ? "success" : "muted";

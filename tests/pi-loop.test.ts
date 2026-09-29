@@ -19,22 +19,14 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-/** The text listing: what a no-UI session prints for /loop and /loop list. */
+/** The text listing: what /loop list prints outside the TUI (AC-R8). */
 async function listText(s: Session): Promise<string> {
-  const was = s.hasUI;
-  s.hasUI = false;
+  const was = s.mode;
+  s.mode = "rpc";
   s.clearNotices();
   await s.command("list");
-  s.hasUI = was;
+  s.mode = was;
   return s.lastNotice();
-}
-
-/** The picker's rows: open it, Esc. */
-async function rows(s: Session): Promise<string[]> {
-  s.selects.length = 0;
-  s.selectImpl = () => undefined;
-  await s.command("");
-  return s.selects[0]?.options ?? [];
 }
 
 beforeEach(() => {
@@ -183,7 +175,7 @@ describe("AC-2 next fire is due at lastFiredAt + interval and only when idle", (
 });
 
 describe("AC-7 list, stop, pause, resume", () => {
-  test("the listing shows name, interval, next due, count, status; /loop and /loop list are the same", async () => {
+  test("the listing shows name, interval, next due, count, status", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     await s.command("2h --name nightly --max 4 pong");
@@ -193,21 +185,11 @@ describe("AC-7 list, stop, pause, resume", () => {
         "nightly  active  next 2026-09-06 12:00  every 2h  fires 1  max 4",
       ].join("\n"),
     );
-    // In a UI session both forms open the same picker (AC-P1).
-    const bare = await rows(s);
-    s.selects.length = 0;
-    await s.command("list");
-    expect(s.selects[0]?.options).toEqual(bare);
-    expect(bare).toEqual([
-      "loop-1      active   next 10:05  every 5m  #1",
-      "nightly     active   next 12:00  every 2h  #1",
-    ]);
   });
 
-  test("the listing with no loops says so, in both forms", async () => {
+  test("the listing with no loops says so", async () => {
     const s = ws.startSession();
     expect(await listText(s)).toBe("no loops");
-    expect(await rows(s)).toEqual(["no loops"]);
   });
 
   test("/loop stop <name> removes the loop; unknown names are an error", async () => {
@@ -1028,12 +1010,7 @@ describe("AC-S10 the fire header displays as a heading", () => {
   });
 });
 
-// docs/specs/pi-loop-picker.md
-
-/** Script the list screen: each entry is what the user picks, in order; undefined is Esc. */
-function script(s: Session, list: Array<string | undefined>): void {
-  s.selectImpl = (title) => (title === "loops" ? list.shift() : undefined);
-}
+// docs/specs/pi-loop-roster.md
 
 /** Script the detail panel: each time it opens, record its plain lines and press the next key. */
 function panel(s: Session, keys: string[]): string[][] {
@@ -1044,190 +1021,6 @@ function panel(s: Session, keys: string[]): string[][] {
   };
   return seen;
 }
-
-describe("AC-P1 bare /loop opens the picker", () => {
-  test("one row per loop: name, status, next, interval, fires", async () => {
-    const s = ws.startSession();
-    await s.command("2h --name slow a");
-    await s.command("5m --name fast --max 4 b");
-    await s.command("1h --name idle c");
-    await s.command("pause idle");
-    script(s, [undefined]);
-    await s.command("");
-    expect(s.selects).toEqual([
-      {
-        title: "loops",
-        options: [
-          "slow        active   next 12:00  every 2h  #1",
-          "fast        active   next 10:05  every 5m  #1",
-          "idle        paused   next -      every 1h  #1",
-        ],
-      },
-    ]);
-  });
-
-  test("a non-owner sees owned by pid; no loops is one row that closes", async () => {
-    const a = ws.startSession();
-    await a.command("5m ping");
-    const b = ws.startSession();
-    script(b, [undefined]);
-    await b.command("");
-    expect(b.selects[0]?.options).toEqual([`loop-1      owned by pid ${a.pid}  next 10:05  every 5m  #1`]);
-
-    await a.command("stop loop-1");
-    script(a, ["no loops"]);
-    await a.command("");
-    expect(a.selects[0]?.options).toEqual(["no loops"]);
-    expect(a.selects).toHaveLength(1);
-  });
-});
-
-describe("AC-P2 Esc on the list closes and writes nothing", () => {
-  test("the state file is byte-identical after open and Esc", async () => {
-    const s = ws.startSession();
-    await s.command("5m ping");
-    const before = fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8");
-    s.clearNotices();
-    script(s, [undefined]);
-    await s.command("");
-    expect(fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8")).toBe(before);
-    expect(s.notices).toEqual([]);
-    expect(s.selects).toHaveLength(1);
-  });
-});
-
-describe("AC-P3 Enter on a row opens the loop's detail panel", () => {
-  test("border, name, fields, hint line with p x escape/ctrl+c, border", async () => {
-    const s = ws.startSession();
-    fs.writeFileSync(ws.file("p.md"), "x");
-    await s.command("2h --name nightly --max 10 --until 23:30 @p.md");
-    script(s, ["nightly     active   next 12:00  every 2h  #1", undefined]);
-    const seen = panel(s, ["\x1b"]);
-    await s.command("");
-    expect(seen).toEqual([
-      [
-        "─".repeat(60),
-        "",
-        " nightly",
-        "",
-        " interval   2h",
-        " prompt     @p.md",
-        " next       2026-09-06 12:00",
-        " fires      1",
-        " status     active",
-        " max        10",
-        " until      2026-09-06 23:30",
-        "",
-        " p pause  x stop  escape/ctrl+c back",
-        "",
-        "─".repeat(60),
-      ],
-    ]);
-  });
-
-  test("hint keys are dim and descriptions muted, like pi's own; a paused loop says p resume; an error shows", async () => {
-    const s = ws.startSession();
-    fs.writeFileSync(ws.file("p.md"), "x");
-    await s.command("5m @p.md");
-    fs.rmSync(ws.file("p.md"));
-    ws.clock.advance(5 * MIN);
-    ws.tick();
-    await s.command("pause loop-1");
-    script(s, ["loop-1      paused   next -      every 5m  #1", undefined]);
-    let styled: string[] = [];
-    s.customImpl = (p) => {
-      styled = p.render(60);
-      p.handleInput?.("\x03");
-    };
-    await s.command("");
-    const hint = styled.find((l) => l.includes("resume"));
-    expect(hint).toBe(" <dim>p</dim><muted> resume</muted>  <dim>x</dim><muted> stop</muted>  <dim>escape/ctrl+c</dim><muted> back</muted>");
-    expect(styled[0]).toBe(`<border>${"─".repeat(60)}</border>`);
-    expect(styled[2]).toBe(" <accent><b>loop-1</b></accent>");
-    expect(styled.find((l) => l.includes("status"))).toBe(" <muted>status    </muted> paused");
-    expect(styled.find((l) => l.includes("error"))).toMatch(/^ <muted>error     <\/muted> prompt file p\.md: .*ENOENT/);
-  });
-});
-
-describe("AC-P4 p pauses or resumes from the panel", () => {
-  test("applies at once, prints the typed command's notice, returns to the list with the new status", async () => {
-    const s = ws.startSession();
-    await s.command("5m ping");
-    ws.clock.advance(5000);
-    ws.tick();
-    s.clearNotices();
-    script(s, ["loop-1      active   next 10:05  every 5m  #1", "loop-1      paused   next -      every 5m  #1", undefined]);
-    const seen = panel(s, ["p", "p"]);
-    await s.command("");
-    expect(s.notices.map((n) => n.message)).toEqual(["paused loop-1", "resumed loop-1, next 2026-09-06 10:05"]);
-    expect(s.selects.map((x) => x.options[0])).toEqual([
-      "loop-1      active   next 10:05  every 5m  #1",
-      "loop-1      paused   next -      every 5m  #1",
-      "loop-1      active   next 10:05  every 5m  #1",
-    ]);
-    expect(seen.map((lines) => lines.find((l) => l.startsWith(" p ")))).toEqual([" p pause  x stop  escape/ctrl+c back", " p resume  x stop  escape/ctrl+c back"]);
-    expect(ws.loops()[0]?.paused).toBe(false);
-    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
-  });
-});
-
-describe("AC-P5 x asks first", () => {
-  test("no keeps the loop; yes removes it and returns to the list", async () => {
-    const s = ws.startSession();
-    await s.command("5m ping");
-    const row = "loop-1      active   next 10:05  every 5m  #1";
-    const answers = [false, true];
-    s.confirmImpl = () => answers.shift() ?? false;
-    script(s, [row, row, "no loops"]);
-    panel(s, ["x", "x"]);
-    await s.command("");
-    expect(s.confirms).toEqual([
-      { title: "Stop loop-1?", message: "The loop is removed. Its fires so far stay in the transcript." },
-      { title: "Stop loop-1?", message: "The loop is removed. Its fires so far stay in the transcript." },
-    ]);
-    expect(s.selects.map((x) => x.options[0])).toEqual([row, row, "no loops"]);
-    expect(ws.loops()).toEqual([]);
-    expect(s.status()).toBeUndefined();
-  });
-});
-
-describe("AC-P6 escape and ctrl+c on the panel return to the list; other keys are ignored; no UI prints text", () => {
-  test("escape, ctrl+c, and a stray key", async () => {
-    const s = ws.startSession();
-    await s.command("5m ping");
-    const row = "loop-1      active   next 10:05  every 5m  #1";
-    script(s, [row, row, undefined]);
-    let opened = 0;
-    s.customImpl = (p) => {
-      opened++;
-      p.handleInput?.("q");
-      p.handleInput?.("\n");
-      expect(ws.loops()).toHaveLength(1);
-      p.handleInput?.(opened === 1 ? "\x1b" : "\x03");
-    };
-    await s.command("");
-    expect(opened).toBe(2);
-    expect(s.selects.map((x) => x.title)).toEqual(["loops", "loops", "loops"]);
-    expect(s.confirms).toEqual([]);
-    expect(ws.loops()).toHaveLength(1);
-  });
-
-  test("without a UI, /loop and /loop list both print the text listing", async () => {
-    const s = ws.startSession();
-    await s.command("5m --name a --max 3 ping");
-    s.shutdown();
-    const p = ws.startSession({ hasUI: false });
-    await p.command("list");
-    const listed = p.lastNotice();
-    expect(listed).toBe("a  active  next 2026-09-06 10:05  every 5m  fires 1  max 3");
-    p.clearNotices();
-    await p.command("");
-    expect(p.lastNotice()).toBe(listed);
-    expect(p.selects).toEqual([]);
-  });
-});
-
-// docs/specs/pi-loop-roster.md
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
@@ -1820,6 +1613,125 @@ describe("AC-R7 escape and ctrl+c on the panel return to the roster; other keys 
     expect(s.confirms).toEqual([]);
     expect(s.notices).toEqual([]);
     expect(fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8")).toBe(before);
+  });
+});
+
+describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print the text listing elsewhere", () => {
+  test("TUI: both forms open the roster exactly as down does, first row selected, writing nothing; keys work afterwards", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name slow a");
+    await s.command("5m --name fast b");
+    const line = s.status();
+    s.press(DOWN);
+    const roster = s.status();
+    expect(roster).toBe(
+      [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #1", "    fast        active   next 10:05  every 5m  #1"].join("\n"),
+    );
+    s.press(ESC);
+    const file = ws.file(".pi-loop/loops.json");
+    const before = fs.readFileSync(file);
+    for (const args of ["", "list"]) {
+      s.clearNotices();
+      await s.command(args);
+      expect(s.status()).toBe(roster);
+      expect(s.notices).toEqual([]);
+      expect(s.press("j")).toBe(true);
+      expect(selectedName(s)).toBe("fast");
+      expect(s.press(ESC)).toBe(true);
+      expect(s.status()).toBe(line);
+    }
+    expect(s.editorKeys).toEqual([]);
+    expect(fs.readFileSync(file).equals(before)).toBe(true);
+  });
+
+  test("TUI: an open roster resets to the first row, and the rows come from the state file, not the last tick", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("stop a");
+    const other = ws.startSession();
+    await other.command("1h --name b y");
+    await s.command("");
+    expect(s.status()?.split("\n").slice(1)).toEqual([`  › ${"b".padEnd(10)}  active   next 10:00  every 1h  #0`]);
+    await s.command("1h --name c z");
+    s.press("j");
+    expect(selectedName(s)).toBe("c");
+    await other.command("1h --name d w");
+    await s.command("list");
+    expect(s.status()?.split("\n").slice(1)).toEqual([
+      `  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #1`,
+      `    ${"c".padEnd(10)}  active   next 10:00  every 1h  #0`,
+      `    ${"d".padEnd(10)}  active   next 10:00  every 1h  #0`,
+    ]);
+  });
+
+  test("TUI with no loops: the notice no loops, no widget, nothing open", async () => {
+    const s = ws.startSession();
+    for (const args of ["", "list"]) {
+      s.clearNotices();
+      await s.command(args);
+      expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
+      expect(s.widgets).toEqual([]);
+      expect(s.status()).toBeUndefined();
+    }
+    await s.command("5m ping");
+    expect(s.status()).toBe(`  1 active loop · fired loop-1 #1${HINT}`);
+  });
+
+  test("TUI without a started session, which pi never produces: the command fails loudly instead of opening nothing", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping");
+    s.shutdown();
+    const orphan = ws.startSession({ hasUI: false });
+    await expect(orphan.command("")).rejects.toThrow("pi-loop: no session to open the roster in");
+    expect(orphan.notices).toEqual([]);
+  });
+
+  test("rpc (with a UI), json, print: both forms print one text line per loop, or no loops, and open nothing", async () => {
+    const a = ws.startSession();
+    fs.writeFileSync(ws.file("p.md"), "x");
+    await a.command("5m --name a --max 3 --until 23:30 @p.md");
+    fs.rmSync(ws.file("p.md"));
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    await a.command("1h --name b pong");
+    await a.command("pause b");
+    a.shutdown();
+    const modes = [
+      ["rpc", true],
+      ["json", false],
+      ["print", false],
+    ] as const;
+    for (const [mode, hasUI] of modes) {
+      const p = ws.startSession({ mode, hasUI });
+      const line = p.status();
+      for (const args of ["", "list"]) {
+        p.clearNotices();
+        await p.command(args);
+        expect(p.notices).toHaveLength(1);
+        expect(p.notices[0]?.type).toBe("info");
+        const [first, second, ...rest] = p.lastNotice().split("\n");
+        expect(first).toMatch(/^a  active  next 2026-09-06 10:10  every 5m  fires 1  max 3  until 2026-09-06 23:30  error: prompt file p\.md: .*ENOENT/);
+        expect(second).toBe("b  paused  next -  every 1h  fires 1");
+        expect(rest).toEqual([]);
+        expect(p.status()).toBe(line);
+        expect(p.press("j")).toBe(false);
+      }
+      p.shutdown();
+    }
+    const s = ws.startSession();
+    await s.command("stop a");
+    await s.command("stop b");
+    s.shutdown();
+    for (const [mode, hasUI] of modes) {
+      const p = ws.startSession({ mode, hasUI });
+      for (const args of ["", "list"]) {
+        p.clearNotices();
+        await p.command(args);
+        expect(p.notices).toEqual([{ message: "no loops", type: "info" }]);
+        expect(p.status()).toBeUndefined();
+      }
+      p.shutdown();
+    }
   });
 });
 
