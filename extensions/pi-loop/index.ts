@@ -317,7 +317,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     if (cmd.kind === "list") {
       const first = loops[0];
       if (ctx.mode === "tui" && first) {
-        // A TUI session always has UI, so session_start has made one; missing, it is a bug to surface, not hide.
+        // session_start makes a session for every TUI-mode start; a missing one is a bug to surface, not hide.
         if (!session) throw new Error("pi-loop: no session to open the roster in");
         session.roster = { selected: first.name, index: 0 };
         return;
