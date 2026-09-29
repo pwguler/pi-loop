@@ -41,7 +41,7 @@ pi install ./pi-loop
 /loop resume <name>
 ```
 
-In the TUI, both forms open the roster, the list of loops; so does ↓ or ← on an empty prompt editor. The status line expands in place into a header and one row per loop (name, status, next, interval, fires):
+In the TUI, both forms open the roster; so does ↓ or ← on an empty prompt editor. The status line expands in place into a header and one row per loop (name, status, next, interval, fires):
 
 ```
 loops · ↑↓/jk select · enter open · esc back
@@ -55,7 +55,7 @@ The detail panel (interval, prompt, next, fires, status, bounds, last error) is 
 p pause  x stop  escape/ctrl+c back        (p resume when the loop is paused)
 ```
 
-`x` asks first. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster comes back showing the new state. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
+`x` asks first. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster comes back showing the change. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
 
 The interval phrase is cut out of the text; what remains is the prompt.
 
@@ -71,7 +71,7 @@ The interval phrase is cut out of the text; what remains is the prompt.
 - Interval forms: `5m`, `5 min`, `2 hours`, `1d`, `hourly`, `daily`, `every hour`, `each day`, `1h30m`, `1 hour 30 minutes`. Minimum `1m`.
 - At the head or the tail of the text any form counts. In the middle only an `every`/`each` phrase counts, so `wait 5 minutes then retry` is prompt text, not an interval. Two phrases reject; say one.
 - Flags: `--name <n>`, `--max <n>`, `--until <ISO|HH:mm>`. Head or tail, never inside the prompt.
-- The loop fires once on create, then every interval, counted from the fire itself. A tick that comes due while the agent is busy fires once when the agent settles.
+- The loop fires once on create, then every interval, counted from the fire itself. A loop that comes due while the agent is busy fires once when the agent settles.
 - `@path` reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in the loop's detail panel and the text listing; the loop stays alive.
 - `--name` defaults to `loop-<k>` with the lowest free `k`.
 - `--max n` removes the loop after its n-th fire. `--until` removes it at that time; `HH:mm` means the next such local time.
@@ -91,9 +91,9 @@ While loops exist, one line directly below the prompt editor, above pi's footer:
 fired smoke #6                                               the last loop reached --max on that fire; 5s, then no line
 ```
 
-The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the error suffix `error`, separators, times, and the `↓/← to manage` hint `dim`. No loops, no line. The line is one below-editor widget, registered once when the first loop appears and redrawn only when its text changes.
+The count carries the state in the theme's colors: `success` steady, `warning` due, `accent` fired, `dim` all paused, `muted` non-owner. The loop name is `accent`, the word `next` `muted`, the error suffix `error`, separators, times, and the `↓/← to manage` hint `dim`. No loops, no line. The line is redrawn only when its text changes.
 
-pi hands a key to the extensions' terminal listeners in the order they registered, and the first one that consumes it keeps it. With pi-loop listed before pi-subagents in settings, pi-subagents' fleet line does not open with ↓/← while loops exist.
+pi hands a key to the extensions' terminal listeners in the order they registered, and the first one that consumes it keeps it. With pi-loop listed before pi-subagents in settings, pi-subagents' fleet line does not open with ↓/← while loops exist. Listing pi-subagents first in settings lets its fleet line take ↓/← while its agents run, and pi-loop gets the key otherwise.
 
 Each fire is one user message:
 
