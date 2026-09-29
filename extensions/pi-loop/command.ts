@@ -27,10 +27,13 @@ export function parseCommand(args: string, now: number): Result<Command> {
   }
 
   // Flags sit at the head or the tail, before or after the interval; never inside the prompt.
+  // Tail flags go before the interval is looked for, so a flag value is never taken for one.
   const flags: Flags = {};
-  const first = stripFlags(args, flags, now);
-  if (!first.ok) return first;
-  const interval = parseIntervalPhrase(first.value);
+  const lead = stripFlags(args, flags, now);
+  if (!lead.ok) return lead;
+  const tail = stripTailFlags(lead.value, flags, now);
+  if (!tail.ok) return tail;
+  const interval = parseIntervalPhrase(tail.value);
   if (!interval.ok) return interval;
   const second = stripFlags(interval.value.rest, flags, now);
   if (!second.ok) return second;
@@ -39,7 +42,7 @@ export function parseCommand(args: string, now: number): Result<Command> {
 
   const promptText = third.value.trim();
   if (promptText === "") return { ok: false, error: `missing prompt. ${USAGE}` };
-  const prompt: PromptSource = promptText.startsWith("@")
+  const prompt: PromptSource = /^@\S+$/.test(promptText)
     ? { kind: "file", path: promptText.slice(1) }
     : { kind: "text", text: promptText };
   return {
@@ -114,7 +117,7 @@ function parseUntil(value: string, now: number): Result<number> {
     at = Date.parse(value);
     if (Number.isNaN(at)) return { ok: false, error: `bad --until "${value}": use an ISO datetime or HH:mm` };
   }
-  if (at <= now) return { ok: false, error: `--until ${value} is already in the past` };
+  if (at <= now) return { ok: false, error: `--until ${value} is already in the past; give a later time` };
   return { ok: true, value: at };
 }
 

@@ -2,6 +2,7 @@
 // the loop record it stores. The default export in index.ts is typed against
 // pi's ExtensionAPI, so tsc checks that pi still satisfies LoopHost.
 
+import type { Api, AssistantMessage, Context, Model, ModelsApiStreamOptions } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 export interface Panel {
@@ -10,16 +11,39 @@ export interface Panel {
   invalidate(): void;
 }
 
+/**
+ * The tui a widget factory is given. pi-tui's TUI interface has no focus
+ * getter, but its runtime object does; optional, so pi's TUI still fits and a
+ * tui without one reads as not focused.
+ */
+export interface WidgetTui {
+  requestRender(): void;
+  getFocusedComponent?(): unknown;
+}
+
 export interface LoopContext {
   cwd: string;
+  mode: "tui" | "rpc" | "json" | "print";
   hasUI: boolean;
   sessionManager: { getSessionId(): string };
+  /** The session's current model; undefined when none is set. */
+  model: Model<Api> | undefined;
+  /** A side completion outside the conversation, used only to name a loop. */
+  modelRegistry: {
+    complete(model: Model<Api>, context: Context, options?: ModelsApiStreamOptions<Api>): Promise<AssistantMessage>;
+  };
   isIdle(): boolean;
   ui: {
     notify(message: string, type?: "info" | "warning" | "error"): void;
-    setStatus(key: string, text: string | undefined): void;
-    theme: Pick<Theme, "fg" | "bold">;
-    select(title: string, options: string[]): Promise<string | undefined>;
+    /** A component widget; undefined removes it. pi calls the factory synchronously. */
+    setWidget(
+      key: string,
+      factory: ((tui: WidgetTui, theme: Pick<Theme, "fg" | "bold">) => Panel) | undefined,
+      options?: { placement?: "aboveEditor" | "belowEditor" },
+    ): void;
+    /** Sees every terminal key before the editor; {consume:true} stops it there. Returns the unsubscribe. */
+    onTerminalInput(handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void;
+    getEditorText(): string;
     confirm(title: string, message: string): Promise<boolean>;
     custom<T>(
       factory: (
@@ -40,7 +64,11 @@ export type MarkdownTransform = (
 ) => string;
 
 export interface LoopHost {
-  on(event: "session_start" | "session_shutdown" | "agent_settled", handler: LoopHandler): void;
+  // One overload per event, not one over their union: a union parameter compares bivariantly, so a
+  // host missing one event would still fit. Each overload needs its own match in pi's ExtensionAPI.
+  on(event: "session_start", handler: LoopHandler): void;
+  on(event: "session_shutdown", handler: LoopHandler): void;
+  on(event: "agent_settled", handler: LoopHandler): void;
   registerCommand(
     name: string,
     options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> },
@@ -57,6 +85,8 @@ export interface Deps {
   isPidAlive(pid: number): boolean;
   /** Start a periodic tick; returns the stop function. */
   ticker(fn: () => void): () => void;
+  /** Start the 8-second naming deadline; its signal aborts when the time is up. */
+  namingDeadline(): AbortSignal;
 }
 
 export type PromptSource = { kind: "text"; text: string } | { kind: "file"; path: string };
