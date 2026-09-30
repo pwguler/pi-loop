@@ -80,7 +80,7 @@ The interval phrase is cut out of the text; what remains is the prompt.
 
 ### Cost
 
-A fire starts a run, and every model request in that run reads the whole conversation so far. A fire whose run calls tools makes several requests. pi-loop adds only the fire at the end, so with prompt caching the conversation so far is a cache read, and only the last reply and the fire are written. The cost of a fire therefore grows with the length of the session, not with the prompt. In one measured session, all 120 fires read the whole conversation from cache. At about 560,000 tokens, a fire answered without tools wrote about 40 tokens and cost about $0.28 with that session's model, about $17 an hour for a `1m` loop. A provider's cache expires after a while without requests, so a fire after a long gap can write the whole conversation to the cache again, which costs more than a read. With `"cacheWarming": "idle"` in pi's settings, pi can keep the cache alive between runs for models that declare a cache lifetime.
+A fire starts a run, and every model request in that run reads the whole conversation so far. A fire whose run calls tools makes several requests. pi-loop adds only the fire at the end, so with prompt caching the conversation so far is a cache read, and the fire's first request writes only the last reply and the fire. The cost of a fire therefore grows with the length of the session, not with the prompt. In one measured session, all 120 fires read the whole conversation from cache. At about 560,000 tokens, a fire answered without tools wrote about 40 tokens and cost about $0.28 with that session's model, about $17 an hour for a `1m` loop. A provider's cache expires after a while without requests, so a fire after a long gap can write the whole conversation to the cache again, which costs more than a read. With `"cacheWarming": "idle"` in pi's settings, pi can keep the cache alive between runs for models that declare a cache lifetime.
 
 - Run frequent loops in a short session of their own.
 - Bound a loop with `--max` or `--until`, and pause a loop you are not watching (`/loop pause <name>`). A paused loop sends nothing and costs nothing.
@@ -136,21 +136,47 @@ The two greps hold the line the extension exists for: no cache markers, no TTL, 
 
 ## Releasing
 
-Releases publish from CI on a version tag. Bump, tag, push:
+Releases publish from CI on an annotated version tag. The tag message holds the
+release notes. Bump, commit, write the notes, tag, push:
 
 ```sh
 VERSION=0.3.0
 npm version "$VERSION" --no-git-tag-version
 git add package.json   # plus bun.lock if the bump changed it
 git commit -m "chore(release): v$VERSION"
-git tag "v$VERSION"
-git push origin main --tags
+NOTES="/tmp/pi-loop-v$VERSION.md"
+$EDITOR "$NOTES"       # release notes, house format below
+git tag -a --cleanup=verbatim -F "$NOTES" "v$VERSION"
+git push origin main "v$VERSION"
 ```
 
-`.github/workflows/publish.yml` then runs typecheck and the full test suite and
+The notes follow the house format: a lead paragraph, then **Changes**,
+**Upgrading**, **Install**, **Verified** (including what was not run), and a
+**Full changelog** compare link. `--cleanup=verbatim` keeps lines that start
+with `#`; the default cleanup deletes them, Markdown headings included.
+
+`.github/workflows/publish.yml` then runs typecheck and the full test suite. It
 refuses the release unless the tag matches `package.json`, the tagged commit is
-on `main`, and the version is not already on the registry. It publishes with a
-provenance attestation linking the tarball to this repository and commit.
+on `main`, the version is not already on the registry, and the tag is annotated
+with a non-empty message. It publishes to npm with a provenance attestation
+linking the tarball to this repository and commit. A last job creates the
+GitHub Release from the tag message, and skips it if that release exists. If
+`npm publish` succeeds and that last job fails, re-run the failed job only:
+re-running all jobs stops at the registry check, because the version is already
+published.
+
+To bump the pi devDependency, run `bun update` for all four pi packages, since
+bun otherwise keeps the resolved versions of the `*` peers:
+
+```sh
+bun update @earendil-works/pi-coding-agent @earendil-works/pi-ai \
+  @earendil-works/pi-tui @earendil-works/pi-agent-core
+```
+
+`bun update` also rewrites `package.json`. Before committing, set the pi
+devDependency back to an exact version, set the peerDependencies back to `"*"`,
+remove any `dependencies` block it added, and run `bun install` so `bun.lock`
+matches `package.json` again.
 
 Publishing needs a repository secret named `NPM_TOKEN`, holding a granular
 access token:
