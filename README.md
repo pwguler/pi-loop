@@ -78,9 +78,17 @@ The interval phrase is cut out of the text; what remains is the prompt.
 - `--max n` removes the loop after its n-th fire. `--until` removes it at that time; `HH:mm` means the next such local time.
 - Pause keeps the counter. Resume waits for the next grid point after the resume moment.
 
+### Cost
+
+A fire starts a run, and every model request in that run reads the whole conversation so far. A fire whose run calls tools makes several requests. pi-loop adds only the fire at the end, so with prompt caching the conversation so far is a cache read, and only the last reply and the fire are written. The cost of a fire therefore grows with the length of the session, not with the prompt. In one measured session, all 120 fires read the whole conversation from cache. At about 560,000 tokens, a fire answered without tools wrote about 40 tokens and cost about $0.28 with that session's model, about $17 an hour for a `1m` loop. A provider's cache expires after a while without requests, so a fire after a long gap can write the whole conversation to the cache again, which costs more than a read. With `"cacheWarming": "idle"` in pi's settings, pi can keep the cache alive between runs for models that declare a cache lifetime.
+
+- Run frequent loops in a short session of their own.
+- Bound a loop with `--max` or `--until`, and pause a loop you are not watching (`/loop pause <name>`). A paused loop sends nothing and costs nothing.
+- A loop keeps at most one fire waiting behind a busy run, so a slow session does not multiply fires.
+
 ## Status line
 
-While loops exist, and for 5s after the last loop's final fire, one line shows directly below the prompt editor, above pi's footer. Otherwise there is no line.
+While loops exist, and for 5s after the last loop's final fire, one line shows below the prompt editor, above pi's footer. Otherwise there is no line. The line stacks with other extensions' below-editor lines, such as pi-subagents' fleet line, in the order they first appeared. A line that disappears and shows again moves below the others. The roster keys do not depend on this order.
 
 ```
   1 active loop · next daily-greeting 00:00 · → to manage      steady: counts and the earliest due active loop
