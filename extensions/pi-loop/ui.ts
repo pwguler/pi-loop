@@ -4,7 +4,7 @@
 // conversation.
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
 import { formatInterval } from "./interval.ts";
 import type { Loop, Panel } from "./types.ts";
 
@@ -19,15 +19,18 @@ export interface Segment {
 /** One widget line: its segments drawn side by side. */
 export type Line = Segment[];
 
-const HINT = "\u2192 to manage";
+/** The shortcut that opens the roster and, while it is open, closes it. */
+export const ROSTER_KEY: KeyId = "ctrl+shift+l";
+
+const HINT = `${ROSTER_KEY} to manage`;
 
 /**
  * The status line as segments, or undefined when there is no line: a muted
  * label, a plain " · " joiner, and one dim detail that carries its own
  * separators and the hint; no glyph, nothing bold.
- * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · → to manage
- * Paused:    1 paused loop · → to manage
- * Non-owner: 2 loops · owned by pid 4242 · → to manage
+ * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · ctrl+shift+l to manage
+ * Paused:    1 paused loop · ctrl+shift+l to manage
+ * Non-owner: 2 loops · owned by pid 4242 · ctrl+shift+l to manage
  * No loops, just fired: fired fast #3 (the label alone)
  */
 export function statusLine(
@@ -113,7 +116,7 @@ export function rosterLines(loops: Loop[], owner: number | undefined, selected: 
     name: Math.min(NAME_MAX, Math.max(NAME_MIN, ...loops.map((l) => l.name.length))),
     status: Math.max(STATUS_MIN, ...loops.map((l) => loopStatus(l, owner).length)),
   };
-  const header: Line = [{ text: "loops", color: "muted" }, { text: " " }, { text: "\u00b7 \u2191\u2193/jk select \u00b7 enter open \u00b7 esc back", color: "dim" }];
+  const header: Line = [{ text: "loops", color: "muted" }, { text: " " }, { text: "\u00b7 \u2191\u2193/jk select \u00b7 p pause \u00b7 r resume \u00b7 enter open \u00b7 esc back", color: "dim" }];
   const rows = loops.slice(start, start + ROSTER_ROWS).map((loop, i): Line => {
     const marker: Segment = start + i === selected ? { text: "\u203a", color: "accent" } : { text: " " };
     return [marker, { text: " " }, ...rosterRow(loop, owner, widths)];
@@ -160,7 +163,8 @@ export type PanelAction = "pause" | "resume" | "stop" | "back";
 
 /**
  * The loop's detail panel, drawn like pi's selector: border, blank, title,
- * blank, body, blank, hint line, blank, border. Single keys act.
+ * blank, body, blank, hint line, blank, border. Single keys act: p pauses an
+ * active loop, r resumes a paused one; the key that does not apply does nothing.
  */
 export function detailPanel(
   loop: Loop,
@@ -169,7 +173,6 @@ export function detailPanel(
   keybindings: { matches(data: string, id: "tui.select.cancel"): boolean },
   done: (action: PanelAction) => void,
 ): Panel {
-  const toggle = loop.paused ? "resume" : "pause";
   const field = (label: string, value: string) => ` ${theme.fg("muted", label.padEnd(10))} ${value}`;
   const hint = (key: string, text: string) => theme.fg("dim", key) + theme.fg("muted", ` ${text}`);
   const body = [
@@ -192,13 +195,14 @@ export function detailPanel(
         "",
         ...body,
         "",
-        ` ${hint("p", toggle)}  ${hint("x", "stop")}  ${hint("escape/ctrl+c", "back")}`,
+        ` ${hint("p", "pause")}  ${hint("r", "resume")}  ${hint("x", "stop")}  ${hint("escape/ctrl+c", "back")}`,
         "",
         border,
       ];
     },
     handleInput(data) {
-      if (data === "p") done(toggle);
+      if (data === "p" && !loop.paused) done("pause");
+      else if (data === "r" && loop.paused) done("resume");
       else if (data === "x") done("stop");
       else if (keybindings.matches(data, "tui.select.cancel")) done("back");
     },

@@ -3,7 +3,9 @@
 // event pi-loop subscribes to: LoopHost must reject each, so a pi release that
 // drops or renames one of those events fails `bun run typecheck`. The last host
 // offers all four and must be accepted, so the rejections are about the
-// missing event, not the fake's shape.
+// missing event, not the fake's shape. A host with all four events but no
+// registerShortcut must be rejected too, so a pi release that drops extension
+// shortcuts fails the typecheck.
 
 import type {
   AgentSettledEvent,
@@ -53,6 +55,7 @@ declare const noSessionShutdown: NoSessionShutdown;
 declare const noAgentStart: NoAgentStart;
 declare const noAgentSettled: NoAgentSettled;
 declare const allEvents: AllEvents;
+declare const noShortcut: Omit<AllEvents, "registerShortcut">;
 
 // @ts-expect-error a host without session_start is not a LoopHost
 export const rejectsNoSessionStart: LoopHost = noSessionStart;
@@ -63,3 +66,5 @@ export const rejectsNoAgentStart: LoopHost = noAgentStart;
 // @ts-expect-error a host without agent_settled is not a LoopHost
 export const rejectsNoAgentSettled: LoopHost = noAgentSettled;
 export const acceptsAllEvents: LoopHost = allEvents;
+// @ts-expect-error a host without registerShortcut is not a LoopHost
+export const rejectsNoShortcut: LoopHost = noShortcut;

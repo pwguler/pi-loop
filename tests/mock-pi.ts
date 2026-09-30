@@ -1,7 +1,7 @@
 // Mock pi host for driving extensions/pi-loop.ts in bun test.
 //
 // A MockPi implements the narrow LoopHost surface the extension uses: on,
-// registerCommand, sendUserMessage. Fires and notices are recorded. The clock,
+// registerCommand, registerShortcut, sendUserMessage. Fires and notices are recorded. The clock,
 // pid, pid liveness, and ticker are all injected so a test drives time and
 // process death explicitly. sessionManager is a Proxy that throws on every
 // member except getSessionId, so any read of conversation history fails loudly.
@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, AssistantMessage, Context, Model, StopReason } from "@earendil-works/pi-ai";
+import { isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
 import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/pi-loop/index.ts";
 
 export interface Fire {
@@ -208,9 +209,21 @@ export function dialogComponent(): unknown {
   return { render: () => [], invalidate() {}, handleInput() {} };
 }
 
+/** Whether a focused component is pi's editor, which alone runs extension shortcuts. */
+function isEditor(component: unknown): boolean {
+  const c = component as { getText?: unknown; setText?: unknown } | null | undefined;
+  return typeof c?.getText === "function" && typeof c.setText === "function";
+}
+
+type ShortcutHandler = Parameters<LoopHost["registerShortcut"]>[1]["handler"];
+
 export class Session implements LoopHost {
   readonly handlers = new Map<string, LoopHandler>();
   readonly commands = new Map<string, (args: string, ctx: LoopContext) => Promise<void>>();
+  /** Registered shortcuts by key, in registration order. */
+  readonly shortcuts = new Map<KeyId, ShortcutHandler>();
+  /** Errors from shortcut handlers, which pi shows as an error line instead of throwing. */
+  readonly shortcutErrors: string[] = [];
   readonly transformers: MarkdownTransform[] = [];
   readonly fires: Fire[] = [];
   readonly notices: Notice[] = [];
@@ -226,7 +239,10 @@ export class Session implements LoopHost {
   private screen: string[] | undefined;
   /** Terminal input listeners, in subscription order. */
   readonly inputListeners: InputHandler[] = [];
-  /** Keys that were not consumed and so reached the editor, as rewritten by the listeners. */
+  /**
+   * Keys that no listener consumed and no shortcut took, as rewritten by the listeners: what pi
+   * passes on to the focused component. pi-tui drops a key release there, so the editor never sees one.
+   */
   readonly editorKeys: string[] = [];
   /** The prompt editor's text. */
   editorText = "";
@@ -318,19 +334,23 @@ export class Session implements LoopHost {
             if (i >= 0) self.inputListeners.splice(i, 1);
           };
         },
-        getEditorText: () => self.editorText,
         async confirm(title: string, message: string) {
           self.confirms.push({ title, message });
           return self.confirmImpl(title, message);
         },
         custom<T>(factory: (tui: { requestRender(): void }, theme: WidgetTheme, keybindings: { matches(data: string, id: "tui.select.cancel"): boolean }, done: (result: T) => void) => Panel): Promise<T> {
           return new Promise<T>((resolve) => {
+            // Like pi: the panel takes focus while it is open, and closing it gives focus back to the editor.
             const panel = factory(
               { requestRender() {} },
               theme,
               { matches: (data, id) => id === "tui.select.cancel" && (data === "\x1b" || data === "\x03") },
-              resolve,
+              (result) => {
+                self.focused = editorComponent();
+                resolve(result);
+              },
             );
+            self.focused = panel;
             self.customImpl(panel);
           });
         },
@@ -345,6 +365,10 @@ export class Session implements LoopHost {
 
   registerCommand(name: string, options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> }): void {
     this.commands.set(name, options.handler);
+  }
+
+  registerShortcut(shortcut: KeyId, options: { description?: string; handler: ShortcutHandler }): void {
+    this.shortcuts.set(shortcut, options.handler);
   }
 
   registerMarkdownTransformer(transformer: MarkdownTransform): void {
@@ -426,8 +450,12 @@ export class Session implements LoopHost {
   /**
    * A key from the terminal, as pi-tui delivers it: listeners run in
    * subscription order, the first {consume:true} stops it, a returned data
-   * rewrites it. Returns whether it was consumed; an unconsumed key is
-   * recorded as reaching the editor.
+   * rewrites it. Then, as pi's editor does, the first registered shortcut
+   * whose key matches takes it, only while the editor has focus and never for
+   * a key release, which pi-tui drops before the editor. The handler starts
+   * without blocking, as in pi; `await flush()` lets it finish. Returns
+   * whether the key was consumed or taken by a shortcut; any other key is
+   * recorded in editorKeys.
    */
   press(data: string): boolean {
     let current = data;
@@ -435,6 +463,15 @@ export class Session implements LoopHost {
       const result = listener(current);
       if (result?.consume) return true;
       if (result?.data !== undefined) current = result.data;
+    }
+    if (!isKeyRelease(current) && isEditor(this.focused)) {
+      for (const [key, handler] of this.shortcuts) {
+        if (!matchesKey(current, key)) continue;
+        Promise.resolve(handler(this.ctx)).catch((e: unknown) => {
+          this.shortcutErrors.push(e instanceof Error ? e.message : String(e));
+        });
+        return true;
+      }
     }
     this.editorKeys.push(current);
     return false;

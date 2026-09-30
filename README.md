@@ -41,21 +41,23 @@ pi install ./pi-loop
 /loop resume <name>
 ```
 
-In the TUI, both forms open the roster; so does → on an empty prompt editor. The status line expands in place into a header and one row per loop (name, status, next, interval, fires); at most 8 rows show, and the window scrolls with the selection:
+In the TUI, both forms open the roster, and so does ctrl+shift+l while the prompt editor has focus, with or without text in it. The status line expands in place into a header and one row per loop (name, status, next, interval, fires); at most 8 rows show, and the window scrolls with the selection:
 
 ```
-loops · ↑↓/jk select · enter open · esc back
+loops · ↑↓/jk select · p pause · r resume · enter open · esc back
 ```
 
-↑↓ or j/k select, Enter opens the selected loop's detail panel, Esc goes back to the status line, and so does ↑ on the first row. Any other key closes the roster and goes to the editor. With no loops, both forms print `no loops`.
+↑↓ or j/k select, and Enter opens the selected loop's detail panel. p pauses the selected loop and r resumes it, and the roster stays open on that loop. Esc goes back to the status line. So does ↑ on the first row, and ctrl+shift+l on any row. Any other key closes the roster and goes to the editor. With no loops, both forms and ctrl+shift+l print `no loops`.
+
+ctrl+shift+l needs a terminal that reports it distinctly, for example with the kitty keyboard protocol or xterm's modifyOtherKeys. Otherwise the terminal sends it as ctrl+l, which opens pi's model selector. `/loop` opens the roster in any terminal. If another extension also registers ctrl+shift+l, pi keeps the one loaded last and prints a warning.
 
 The detail panel (interval, prompt, next, fires, status, bounds, last error) is drawn like pi's own dialogs, with single keys along the bottom:
 
 ```
-p pause  x stop  escape/ctrl+c back        (p resume when the loop is paused)
+p pause  r resume  x stop  escape/ctrl+c back
 ```
 
-`x` asks first. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster comes back showing the change. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
+p pauses an active loop and r resumes a paused one. The key that does not apply does nothing, in the panel and in the roster. `x` asks first, and only the panel has it. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster shows the change. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
 
 The interval phrase is cut out of the text; what remains is the prompt.
 
@@ -91,17 +93,17 @@ A fire starts a run, and every model request in that run reads the whole convers
 While loops exist, and for 5s after the last loop's final fire, one line shows below the prompt editor, above pi's footer. Otherwise there is no line. The line stacks with other extensions' below-editor lines, such as pi-subagents' fleet line, in the order they first appeared. A line that disappears and shows again moves below the others. The roster keys do not depend on this order.
 
 ```
-  1 active loop · next daily-greeting 00:00 · → to manage      steady: counts and the earliest due active loop
-  2 active loops, 1 paused · due fast · → to manage            fast is due but cannot be sent yet, for example during a compaction
-  2 active loops · fired fast #6 · → to manage                 for 5s after a fire, then back to next
-  2 paused loops · → to manage                                 everything paused
-  3 active loops · next b 10:05 · 1 error · → to manage        some loop has a last error; its detail panel has the message
-  2 loops · owned by pid 4242 · → to manage                    this session is not the owner
+  1 active loop · next daily-greeting 00:00 · ctrl+shift+l to manage      steady: counts and the earliest due active loop
+  2 active loops, 1 paused · due fast · ctrl+shift+l to manage            fast is due but cannot be sent yet, for example during a compaction
+  2 active loops · fired fast #6 · ctrl+shift+l to manage                 for 5s after a fire, then back to next
+  2 paused loops · ctrl+shift+l to manage                                 everything paused
+  3 active loops · next b 10:05 · 1 error · ctrl+shift+l to manage        some loop has a last error; its detail panel has the message
+  2 loops · owned by pid 4242 · ctrl+shift+l to manage                    this session is not the owner
 ```
 
-The line uses the tones of pi-subagents' fleet line. The count is `muted` and a plain ` · ` follows it. Everything after that is one `dim` segment: the next, due, fired, or owner clause, the error suffix, and the `→ to manage` hint. When the last loop ends on its `--max` fire, the line reads `fired <name> #<n>` alone, in `muted`, for 5s and then disappears. Nothing in the line is bold or colored beyond those two tones. The line is redrawn only when its text changes.
+The line uses the tones of pi-subagents' fleet line. The count is `muted` and a plain ` · ` follows it. Everything after that is one `dim` segment: the next, due, fired, or owner clause, the error suffix, and the `ctrl+shift+l to manage` hint. When the last loop ends on its `--max` fire, the line reads `fired <name> #<n>` alone, in `muted`, for 5s and then disappears. Nothing in the line is bold or colored beyond those two tones. The line is redrawn only when its text changes.
 
-pi offers each key to the extensions' terminal listeners in the order they registered, which follows the package order in settings, and the first listener that consumes a key keeps it. pi-subagents opens its roster with ↓ or ← on an empty editor while it has active runs, and pi-loop opens its roster with →, so with both rosters closed each key has one owner. With pi-loop listed first in the package list, ← inside pi-loop's open roster closes it and opens pi-subagents' roster if that is closed. → while pi-subagents' roster is open opens pi-loop's roster too; until it closes, pi-loop's roster takes ↓, ↑, j, k, Enter, and Esc first. With pi-subagents listed first, ↓ and ← inside pi-loop's open roster reach pi-subagents first and open its roster while pi-loop's stays open. pi-subagents then takes ↓, ↑, j, k, Enter, and Esc first; use j and k to move in pi-loop's roster before opening pi-subagents'.
+pi offers each key to the extensions' terminal listeners in the order they registered, which follows the package order in settings. The first listener that consumes a key keeps it. Extension shortcuts run after all listeners, from the prompt editor, so ctrl+shift+l reaches pi-loop only after every listener let it pass. pi-subagents opens its roster with ↓ or ← on an empty editor while its fleet line shows. pi-loop's closed roster leaves ↓, ←, and → to their usual owners. ctrl+shift+l while pi-subagents' roster is open closes that roster, which passes keys it does not own, and opens pi-loop's, in either package order. With pi-loop listed first in the package list, ← inside pi-loop's open roster closes it and opens pi-subagents' roster if that is closed. With pi-subagents listed first, ↓ and ← inside pi-loop's open roster reach pi-subagents first and open its roster while pi-loop's stays open. pi-subagents then takes ↓, ↑, j, k, Enter, and Esc first; use j and k to move in pi-loop's roster before opening pi-subagents'.
 
 Each fire is one user message:
 

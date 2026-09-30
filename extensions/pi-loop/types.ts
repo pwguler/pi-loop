@@ -4,6 +4,7 @@
 
 import type { Api, AssistantMessage, Context, Model, ModelsApiStreamOptions } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
 
 export interface Panel {
   render(width: number): string[];
@@ -43,7 +44,6 @@ export interface LoopContext {
     ): void;
     /** Sees every terminal key before the editor; {consume:true} stops it there. Returns the unsubscribe. */
     onTerminalInput(handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void;
-    getEditorText(): string;
     confirm(title: string, message: string): Promise<boolean>;
     custom<T>(
       factory: (
@@ -73,6 +73,11 @@ export interface LoopHost {
   registerCommand(
     name: string,
     options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> },
+  ): void;
+  /** pi runs the handler when the key reaches its editor after every terminal input listener let it pass. */
+  registerShortcut(
+    shortcut: KeyId,
+    options: { description?: string; handler: (ctx: LoopContext) => Promise<void> | void },
   ): void;
   /** Display-only: pi renders the returned Markdown; the stored message and model context are untouched. */
   registerMarkdownTransformer(transformer: MarkdownTransform): void;
