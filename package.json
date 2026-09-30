@@ -2,7 +2,7 @@
   "name": "@pwguler/pi-loop",
   "version": "0.3.0",
   "type": "module",
-  "description": "A pi extension that re-sends one prompt on a fixed interval inside the current session.",
+  "description": "A pi extension for loop",
   "license": "MIT",
   "author": "pwguler",
   "repository": {

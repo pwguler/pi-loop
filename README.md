@@ -1,6 +1,6 @@
 # pi-loop
 
-A pi extension that re-sends one prompt on a fixed interval inside the current session.
+A pi extension for loop
 
 ## Install
 
