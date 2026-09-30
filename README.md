@@ -19,7 +19,7 @@ pi install git:github.com/pwguler/pi-loop
 Pin a release so updates don't move under you:
 
 ```sh
-pi install git:github.com/pwguler/pi-loop@v0.4.0
+pi install git:github.com/pwguler/pi-loop@v0.4.1
 ```
 
 To update a git-installed package later, install the next tag the same way. Start or reload pi, then `/loop` is available. To try it without installing, use `pi -e git:github.com/pwguler/pi-loop`.
@@ -142,7 +142,7 @@ Releases publish from CI on an annotated version tag. The tag message holds the
 release notes. Bump, commit, write the notes, tag, push:
 
 ```sh
-VERSION=0.4.0
+VERSION=0.4.1
 npm version "$VERSION" --no-git-tag-version
 git add package.json   # plus bun.lock if the bump changed it
 git commit -m "chore(release): v$VERSION"
