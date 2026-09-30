@@ -914,7 +914,7 @@ describe("AC-12 loop state is never read from conversation history", () => {
 
 // docs/specs/pi-loop-status.md
 
-const HINT = " · ctrl+shift+l to manage";
+const HINT = " · alt+l to manage";
 
 describe("AC-S1 the owner line reads counts and the next fire", () => {
   test("<a> active loop(s)[, <p> paused] · next <earliest active> <HH:mm>; all paused drops next", async () => {
@@ -1129,7 +1129,7 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     await s.command("pause p");
     ws.clock.advance(5000);
     ws.tick();
-    expect(s.styled()).toBe(`  ${label("1 active loop, 1 paused")} · ${detail("next fast 10:05 · ctrl+shift+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 active loop, 1 paused")} · ${detail("next fast 10:05 · alt+l to manage")}`);
   });
 
   test("due: the due clause is in the dim detail", async () => {
@@ -1139,13 +1139,13 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     s.compacting();
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("due loop-1 · ctrl+shift+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("due loop-1 · alt+l to manage")}`);
   });
 
   test("fired pulse: the fired clause is in the dim detail, not bold", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("fired loop-1 #1 · ctrl+shift+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("fired loop-1 #1 · alt+l to manage")}`);
   });
 
   test("all paused: muted count, plain joiner, dim hint alone", async () => {
@@ -1153,7 +1153,7 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     await s.command("5m ping");
     ws.clock.advance(5000);
     await s.command("pause loop-1");
-    expect(s.styled()).toBe(`  ${label("1 paused loop")} · ${detail("ctrl+shift+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 paused loop")} · ${detail("alt+l to manage")}`);
   });
 
   test("non-owner: muted count, dim owner clause and hint", async () => {
@@ -1161,7 +1161,7 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     await a.command("5m ping");
     const b = ws.startSession();
     ws.tick();
-    expect(b.styled()).toBe(`  ${label("1 loop")} · ${detail(`owned by pid ${a.pid} · ctrl+shift+l to manage`)}`);
+    expect(b.styled()).toBe(`  ${label("1 loop")} · ${detail(`owned by pid ${a.pid} · alt+l to manage`)}`);
   });
 
   test("error: the suffix sits inside the dim detail before the hint, with a next clause and with a pulse", async () => {
@@ -1172,9 +1172,9 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     fs.rmSync(ws.file("a.md"));
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.styled()).toBe(`  ${label("2 active loops")} · ${detail("next a 10:10 · 1 error · ctrl+shift+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("2 active loops")} · ${detail("next a 10:10 · 1 error · alt+l to manage")}`);
     await s.command("1m --name c now");
-    expect(s.styled()).toBe(`  ${label("3 active loops")} · ${detail("fired c #1 · 1 error · ctrl+shift+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("3 active loops")} · ${detail("fired c #1 · 1 error · alt+l to manage")}`);
   });
 
   test("pulse only: no loops remain after --max; the fired clause is the muted label alone", async () => {
@@ -1190,7 +1190,7 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     if (!factory) throw new Error("no widget registered");
     const other = { fg: (color: string, text: string) => `[${color}]${text}`, bold: (text: string) => `*${text}` };
     const line = factory({ requestRender() {} }, other).render(200)[0];
-    expect(line).toBe(`  [muted]1 active loop · [dim]fired loop-1 #1 · ctrl+shift+l to manage`);
+    expect(line).toBe(`  [muted]1 active loop · [dim]fired loop-1 #1 · alt+l to manage`);
   });
 });
 
@@ -1291,16 +1291,22 @@ const ESC = "\x1b";
 const ENTER = "\r";
 /** ↓ released, in the Kitty keyboard protocol's event-type form: pi-tui's isKeyRelease recognizes it and matchesKey still reads it as down. */
 const DOWN_RELEASE = "\x1b[1;1:3B";
-/** ctrl+shift+l as a terminal reports it with the kitty keyboard protocol (108 is l; modifier 6 is 1 + shift 1 + ctrl 4). */
-const SHORTCUT = "\x1b[108;6u";
-/** ctrl+shift+l in xterm's modifyOtherKeys form, which pi-tui also reads as ctrl+shift+l. */
-const SHORTCUT_XTERM = "\x1b[27;6;108~";
-/** ctrl+shift+l released, in the kitty event-type form: matchesKey still reads it as ctrl+shift+l, isKeyRelease as a release. */
-const SHORTCUT_RELEASE = "\x1b[108;6:3u";
-/** ctrl+shift+l held down: the kitty key-repeat form, which matchesKey still reads as ctrl+shift+l. */
-const SHORTCUT_REPEAT = "\x1b[108;6:2u";
-/** What a terminal without either protocol sends for ctrl+shift+l: plain ctrl+l, pi's model selector key. */
+/** alt+l as a terminal without the kitty keyboard protocol sends it: Esc followed by l. */
+const SHORTCUT = "\x1bl";
+/** alt+l as a terminal reports it with the kitty keyboard protocol (108 is l; modifier 3 is 1 + alt 2). */
+const SHORTCUT_KITTY = "\x1b[108;3u";
+/** alt+l in xterm's modifyOtherKeys form, which pi-tui also reads as alt+l. */
+const SHORTCUT_XTERM = "\x1b[27;3;108~";
+/** alt+l released, in the kitty event-type form: matchesKey still reads it as alt+l, isKeyRelease as a release. */
+const SHORTCUT_RELEASE = "\x1b[108;3:3u";
+/** alt+l held down: the kitty key-repeat form, which matchesKey still reads as alt+l. */
+const SHORTCUT_REPEAT = "\x1b[108;3:2u";
+/** ctrl+l, pi's model selector key. */
 const CTRL_L = "\x0c";
+/** ctrl+shift+l in the kitty form (modifier 6 is 1 + shift 1 + ctrl 4): a different key from alt+l. */
+const CTRL_SHIFT_L = "\x1b[108;6u";
+/** Esc followed by L: what a terminal without the kitty keyboard protocol sends for alt+shift+l. pi-tui reads it as no key it names, and never as alt+l. */
+const ALT_SHIFT_L = "\x1bL";
 const ROSTER_HEADER = "  loops · ↑↓/jk select · p pause · r resume · enter open · esc back";
 
 /** Press the roster shortcut and let its handler finish, since pi starts it without waiting; returns whether pi took the key. */
@@ -1357,7 +1363,7 @@ function fleetRoster(s: Session, first = false) {
   return state;
 }
 
-describe("AC-R1 the shortcut ctrl+shift+l opens the roster; right, down, and left stay with the editor and the next listener", () => {
+describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay with the editor and the next listener", () => {
   test("the shortcut opens it with the first row selected and pi takes the key", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
@@ -1372,18 +1378,21 @@ describe("AC-R1 the shortcut ctrl+shift+l opens the roster; right, down, and lef
     expect(s.editorKeys).toEqual([]);
   });
 
-  test("the xterm modifyOtherKeys form of ctrl+shift+l opens it too", async () => {
-    const s = ws.startSession();
-    await s.command("2h --name slow a");
-    expect(await shortcut(s, SHORTCUT_XTERM)).toBe(true);
-    expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
-    expect(s.editorKeys).toEqual([]);
+  test("the kitty and xterm modifyOtherKeys forms of alt+l open it too", async () => {
+    for (const form of [SHORTCUT_KITTY, SHORTCUT_XTERM]) {
+      const s = ws.startSession();
+      await s.command("2h --name slow a");
+      expect(await shortcut(s, form)).toBe(true);
+      expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
+      expect(s.editorKeys).toEqual([]);
+      s.shutdown();
+    }
   });
 
-  test("the shortcut is registered once, as ctrl+shift+l, in every mode", () => {
+  test("the shortcut is registered once, as alt+l, in every mode", () => {
     for (const mode of ["tui", "rpc", "json", "print"] as const) {
       const s = ws.startSession({ mode });
-      expect([...s.shortcuts.keys()]).toEqual(["ctrl+shift+l"]);
+      expect([...s.shortcuts.keys()]).toEqual(["alt+l"]);
       s.shutdown();
     }
   });
@@ -1399,12 +1408,30 @@ describe("AC-R1 the shortcut ctrl+shift+l opens the roster; right, down, and lef
     expect(s.requestRenders).toBe(renders);
   });
 
-  test("ctrl+l as a terminal without the kitty protocol sends ctrl+shift+l opens nothing and reaches the editor", async () => {
+  test("ctrl+l, pi's model selector key, opens nothing and reaches the editor", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     const line = s.status();
     expect(await shortcut(s, CTRL_L)).toBe(false);
     expect(s.editorKeys).toEqual([CTRL_L]);
+    expect(s.status()).toBe(line);
+  });
+
+  test("ctrl+shift+l in its kitty form opens nothing and reaches the editor", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name slow a");
+    const line = s.status();
+    expect(await shortcut(s, CTRL_SHIFT_L)).toBe(false);
+    expect(s.editorKeys).toEqual([CTRL_SHIFT_L]);
+    expect(s.status()).toBe(line);
+  });
+
+  test("alt+shift+l, Esc followed by L, opens nothing and reaches the editor", async () => {
+    const s = ws.startSession();
+    await s.command("2h --name slow a");
+    const line = s.status();
+    expect(await shortcut(s, ALT_SHIFT_L)).toBe(false);
+    expect(s.editorKeys).toEqual([ALT_SHIFT_L]);
     expect(s.status()).toBe(line);
   });
 
@@ -1522,12 +1549,12 @@ describe("AC-R1 the shortcut ctrl+shift+l opens the roster; right, down, and lef
     const line = s.status();
     expect(await shortcut(s, SHORTCUT_RELEASE)).toBe(false);
     expect(s.status()).toBe(line);
-    expect(await shortcut(s)).toBe(true);
+    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
     const open = s.status();
     expect(open?.startsWith(ROSTER_HEADER)).toBe(true);
     expect(await shortcut(s, SHORTCUT_RELEASE)).toBe(false);
     expect(s.status()).toBe(open);
-    expect(await shortcut(s)).toBe(true);
+    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
     expect(s.status()).toBe(line);
     expect(await shortcut(s, SHORTCUT_RELEASE)).toBe(false);
     expect(s.status()).toBe(line);
@@ -1761,7 +1788,7 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
   test("holding the shortcut keeps the roster open: its repeats are consumed and change nothing", async () => {
     const s = await three();
     const line = s.status();
-    await shortcut(s);
+    await shortcut(s, SHORTCUT_KITTY);
     s.press("j");
     const open = s.status();
     for (let i = 0; i < 3; i++) expect(s.press(SHORTCUT_REPEAT)).toBe(true);
@@ -1770,7 +1797,7 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
     expect(selected(s)).toBe("b");
     expect(s.press(SHORTCUT_RELEASE)).toBe(false);
     expect(s.status()).toBe(open);
-    expect(await shortcut(s)).toBe(true);
+    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
     expect(s.status()).toBe(line);
     expect(s.editorKeys).toEqual([SHORTCUT_RELEASE]);
   });
@@ -1778,8 +1805,8 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
   test("holding the shortcut that closed the roster keeps it closed: its repeats are consumed and never reach pi's shortcut", async () => {
     const s = await three();
     const line = s.status();
-    await shortcut(s);
-    expect(await shortcut(s)).toBe(true);
+    await shortcut(s, SHORTCUT_KITTY);
+    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
     expect(s.status()).toBe(line);
     for (let i = 0; i < 3; i++) expect(s.press(SHORTCUT_REPEAT)).toBe(true);
     await s.flush();

@@ -20,7 +20,7 @@ export interface Segment {
 export type Line = Segment[];
 
 /** The shortcut that opens the roster and, while it is open, closes it. */
-export const ROSTER_KEY: KeyId = "ctrl+shift+l";
+export const ROSTER_KEY: KeyId = "alt+l";
 
 const HINT = `${ROSTER_KEY} to manage`;
 
@@ -28,9 +28,9 @@ const HINT = `${ROSTER_KEY} to manage`;
  * The status line as segments, or undefined when there is no line: a muted
  * label, a plain " · " joiner, and one dim detail that carries its own
  * separators and the hint; no glyph, nothing bold.
- * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · ctrl+shift+l to manage
- * Paused:    1 paused loop · ctrl+shift+l to manage
- * Non-owner: 2 loops · owned by pid 4242 · ctrl+shift+l to manage
+ * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · alt+l to manage
+ * Paused:    1 paused loop · alt+l to manage
+ * Non-owner: 2 loops · owned by pid 4242 · alt+l to manage
  * No loops, just fired: fired fast #3 (the label alone)
  */
 export function statusLine(
