@@ -41,23 +41,25 @@ pi install ./pi-loop
 /loop resume <name>
 ```
 
-In the TUI, both forms open the roster, and so does alt+l while the prompt editor has focus, with or without text in it. The status line expands in place into a header and one row per loop (name, status, next, interval, fires); at most 8 rows show, and the window scrolls with the selection:
+In the TUI, both forms open the roster, and so does alt+l while the prompt editor has focus, with or without text in it. The status line expands in place into a header and one row per loop (name, status, next, interval, fires); at most 8 rows show, and the window scrolls with the selection. The header names the keys for the selected loop:
 
 ```
-loops · ↑↓/jk select · p pause · r resume · enter open · esc back
+loops · ↑↓/jk select · p pause · x stop · enter open · esc back
+loops · ↑↓/jk select · r resume · x stop · enter open · esc back
 ```
 
-↑↓ or j/k select, and Enter opens the selected loop's detail panel. p pauses the selected loop and r resumes it, and the roster stays open on that loop. Esc goes back to the status line. So does ↑ on the first row, and alt+l on any row. Any other key closes the roster and goes to the editor. With no loops, both forms and alt+l print `no loops`.
+↑↓ or j/k select, and Enter opens the selected loop's detail panel. p pauses the selected loop and r resumes it, and the roster stays open on that loop. x asks `Stop <name>?`; yes stops the loop, and the roster stays open on the row that takes its place, or the last row. Esc goes back to the status line. So does ↑ on the first row, and alt+l on any row. Any other key closes the roster and goes to the editor. With no loops, both forms and alt+l print `no loops`.
 
 alt+l arrives as Esc followed by l, so it works without the kitty keyboard protocol. pi joins the two into alt+l when they arrive within 10 ms, or 100 ms over SSH; for a slower multiplexer or link, set `PI_TUI_ESC_TIMEOUT` to a larger number of milliseconds. On macOS the Option key has to send Meta (Esc+), for example with iTerm2's "Esc+" setting, Terminal.app's "Use Option as Meta key", or Ghostty's `macos-option-as-alt`. In a terminal without the kitty keyboard protocol, repeats arrive as presses, so holding alt+l toggles the roster. `/loop` opens the roster in any terminal. If another extension also registers alt+l, pi keeps the one loaded last and prints a warning.
 
-The detail panel (interval, prompt, next, fires, status, bounds, last error) is drawn like pi's own dialogs, with single keys along the bottom:
+The detail panel (interval, prompt, next, fires, status, bounds, last error) is drawn like pi's own dialogs, with single keys along the bottom. The first key follows the loop's state:
 
 ```
-p pause  r resume  x stop  escape/ctrl+c back
+p pause  x stop  escape/ctrl+c back
+r resume  x stop  escape/ctrl+c back
 ```
 
-p pauses an active loop and r resumes a paused one. The key that does not apply does nothing, in the panel and in the roster. `x` asks first, and only the panel has it. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster shows the change. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
+p pauses an active loop and r resumes a paused one. The key that does not apply does nothing, in the panel and in the roster. `x` asks first, in the panel and in the roster. Stopping the last loop closes the roster and removes the status line. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster shows the change. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
 
 The interval phrase is cut out of the text; what remains is the prompt.
 

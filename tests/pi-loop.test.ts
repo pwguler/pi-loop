@@ -1307,7 +1307,10 @@ const CTRL_L = "\x0c";
 const CTRL_SHIFT_L = "\x1b[108;6u";
 /** Esc followed by L: what a terminal without the kitty keyboard protocol sends for alt+shift+l. pi-tui reads it as no key it names, and never as alt+l. */
 const ALT_SHIFT_L = "\x1bL";
-const ROSTER_HEADER = "  loops · ↑↓/jk select · p pause · r resume · enter open · esc back";
+/** The roster header while the selected loop is active. */
+const ROSTER_HEADER = "  loops · ↑↓/jk select · p pause · x stop · enter open · esc back";
+/** The roster header while the selected loop is paused. */
+const ROSTER_HEADER_PAUSED = "  loops · ↑↓/jk select · r resume · x stop · enter open · esc back";
 
 /** Press the roster shortcut and let its handler finish, since pi starts it without waiting; returns whether pi took the key. */
 async function shortcut(s: Session, data = SHORTCUT): Promise<boolean> {
@@ -1617,7 +1620,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await shortcut(a);
     expect(a.styled()).toBe(
       [
-        "  <muted>loops</muted> <dim>· ↑↓/jk select · p pause · r resume · enter open · esc back</dim>",
+        "  <muted>loops</muted> <dim>· ↑↓/jk select · p pause · x stop · enter open · esc back</dim>",
         "  <accent>›</accent> slow        <success>active</success>   next 12:00  every 2h  #1",
         "    fast        <dim>paused</dim>   next -      every 5m  #1",
       ].join("\n"),
@@ -1698,6 +1701,41 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
       for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(width);
     }
     expect(stripAnsi(widget.render(20)[1] ?? "")).toBe("  › a-rather-long...");
+  });
+  test("the header follows the selected loop: p pause for an active one, r resume for a paused one, as the selection moves and after p and r", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("1h --name b y");
+    await s.command("pause b");
+    await shortcut(s);
+    const header = () => s.status()?.split("\n")[0];
+    expect(header()).toBe(ROSTER_HEADER);
+    s.press("j");
+    expect(header()).toBe(ROSTER_HEADER_PAUSED);
+    s.press("k");
+    expect(header()).toBe(ROSTER_HEADER);
+    s.press(DOWN);
+    expect(header()).toBe(ROSTER_HEADER_PAUSED);
+    expect(s.styled()?.split("\n")[0]).toBe("  <muted>loops</muted> <dim>· ↑↓/jk select · r resume · x stop · enter open · esc back</dim>");
+    s.press(UP);
+    expect(header()).toBe(ROSTER_HEADER);
+    s.press("p");
+    await s.flush();
+    expect(selectedName(s)).toBe("a");
+    expect(header()).toBe(ROSTER_HEADER_PAUSED);
+    s.press("r");
+    await s.flush();
+    expect(header()).toBe(ROSTER_HEADER);
+    s.press("j");
+    expect(header()).toBe(ROSTER_HEADER_PAUSED);
+    s.press("r");
+    await s.flush();
+    expect(selectedName(s)).toBe("b");
+    expect(header()).toBe(ROSTER_HEADER);
+    s.press("p");
+    await s.flush();
+    expect(header()).toBe(ROSTER_HEADER_PAUSED);
+    expect(s.editorKeys).toEqual([]);
   });
 });
 
@@ -1895,7 +1933,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
         " fires      1",
         " status     active",
         "",
-        " p pause  r resume  x stop  escape/ctrl+c back",
+        " p pause  x stop  escape/ctrl+c back",
         "",
         "─".repeat(60),
       ],
@@ -1912,7 +1950,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
         " max        10",
         " until      2026-09-06 23:30",
         "",
-        " p pause  r resume  x stop  escape/ctrl+c back",
+        " p pause  x stop  escape/ctrl+c back",
         "",
         "─".repeat(60),
       ],
@@ -1922,7 +1960,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     expect(s.editorKeys).toEqual([]);
   });
 
-  test("hint keys dim and descriptions muted; a paused loop's hint names both p pause and r resume; an error shows", async () => {
+  test("hint keys dim and descriptions muted; a paused loop's hint names r resume and not p pause; an error shows", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("p.md"), "x");
     await s.command("5m @p.md");
@@ -1942,8 +1980,8 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     expect(styled[2]).toBe(" <accent><b>loop-1</b></accent>");
     expect(styled.find((l) => l.includes("status"))).toBe(" <muted>status    </muted> paused");
     expect(styled.find((l) => l.includes("error"))).toMatch(/^ <muted>error     <\/muted> prompt file p\.md: .*ENOENT/);
-    expect(styled.find((l) => l.includes("resume"))).toBe(
-      " <dim>p</dim><muted> pause</muted>  <dim>r</dim><muted> resume</muted>  <dim>x</dim><muted> stop</muted>  <dim>escape/ctrl+c</dim><muted> back</muted>",
+    expect(styled.find((l) => l.includes("escape/ctrl+c"))).toBe(
+      " <dim>r</dim><muted> resume</muted>  <dim>x</dim><muted> stop</muted>  <dim>escape/ctrl+c</dim><muted> back</muted>",
     );
     expect(styled[styled.length - 1]).toBe(`<border>${"─".repeat(60)}</border>`);
   });
@@ -2143,9 +2181,9 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     await s.flush();
     expect(s.notices.map((n) => n.message)).toEqual(["paused b", "resumed b, next 2026-09-06 11:00"]);
     expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #1`);
-    expect(seen.map((lines) => lines.find((l) => l.startsWith(" p ")))).toEqual([
-      " p pause  r resume  x stop  escape/ctrl+c back",
-      " p pause  r resume  x stop  escape/ctrl+c back",
+    expect(seen.map((lines) => lines.find((l) => l.includes("escape/ctrl+c")))).toEqual([
+      " p pause  x stop  escape/ctrl+c back",
+      " r resume  x stop  escape/ctrl+c back",
     ]);
   });
 
@@ -2195,7 +2233,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
       ["b", true],
     ]);
     expect(s.notices).toEqual([{ message: "paused b", type: "info" }]);
-    expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER);
+    expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER_PAUSED);
     expect(selectedName(s)).toBe("b");
     expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`);
     expect(s.editorKeys).toEqual([]);
@@ -2252,7 +2290,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     await shortcut(s);
     expect(s.press("p")).toBe(true);
     await s.flush();
-    expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
+    expect(s.status()?.startsWith(ROSTER_HEADER_PAUSED)).toBe(true);
     expect(s.press("r")).toBe(true);
     await s.flush();
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
@@ -2326,6 +2364,173 @@ describe("AC-R6 x on the panel asks first", () => {
     expect(await shortcut(s)).toBe(true);
     expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
     expect(s.status()).toBeUndefined();
+  });
+});
+
+describe("AC-R6 x on the open roster asks first, as on the panel", () => {
+  async function three(): Promise<Session> {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await s.command("1h --name b y");
+    await s.command("1h --name c z");
+    return s;
+  }
+  const file = () => fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8");
+
+  test("x asks Stop <name>? and is consumed; no changes nothing and keeps the roster open on the same loop", async () => {
+    const s = await three();
+    await shortcut(s);
+    s.press("j");
+    const open = s.status();
+    const before = file();
+    s.clearNotices();
+    s.confirmImpl = () => false;
+    expect(s.press("x")).toBe(true);
+    await s.flush();
+    expect(s.confirms).toEqual([{ title: "Stop b?", message: STOP_MESSAGE }]);
+    expect(s.notices).toEqual([]);
+    expect(file()).toBe(before);
+    expect(s.status()).toBe(open);
+    expect(selectedName(s)).toBe("b");
+    expect(s.editorKeys).toEqual([]);
+    expect(s.press("j")).toBe(true);
+    expect(selectedName(s)).toBe("c");
+  });
+
+  test("yes stops the loop through the typed command; the roster stays open on the row now at its index, or the last row", async () => {
+    const s = await three();
+    await shortcut(s);
+    s.press("j");
+    s.clearNotices();
+    s.confirmImpl = () => true;
+    expect(s.press("x")).toBe(true);
+    await s.flush();
+    expect(s.confirms).toEqual([{ title: "Stop b?", message: STOP_MESSAGE }]);
+    expect(s.notices).toEqual([{ message: "stopped b", type: "info" }]);
+    expect(ws.loops().map((l) => l.name)).toEqual(["a", "c"]);
+    expect(s.status()).toBe(
+      [ROSTER_HEADER, `    ${"a".padEnd(10)}  active   next 11:00  every 1h  #1`, `  › ${"c".padEnd(10)}  active   next 11:00  every 1h  #1`].join("\n"),
+    );
+    expect(s.press("x")).toBe(true);
+    await s.flush();
+    expect(s.confirms.map((c) => c.title)).toEqual(["Stop b?", "Stop c?"]);
+    expect(s.notices.map((n) => n.message)).toEqual(["stopped b", "stopped c"]);
+    expect(ws.loops().map((l) => l.name)).toEqual(["a"]);
+    expect(s.status()).toBe([ROSTER_HEADER, `  › ${"a".padEnd(10)}  active   next 11:00  every 1h  #1`].join("\n"));
+    expect(s.press(ESC)).toBe(true);
+    expect(s.status()).toBe("  1 active loop · next a 11:00 · alt+l to manage");
+    expect(s.editorKeys).toEqual([]);
+  });
+
+  test("yes on a paused loop stops it too, and the header follows the loop selected afterwards", async () => {
+    const s = await three();
+    await s.command("pause b");
+    await shortcut(s);
+    s.press("j");
+    expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER_PAUSED);
+    s.confirmImpl = () => true;
+    expect(s.press("x")).toBe(true);
+    await s.flush();
+    expect(ws.loops().map((l) => l.name)).toEqual(["a", "c"]);
+    expect(selectedName(s)).toBe("c");
+    expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER);
+  });
+
+  test("x on the last loop closes the roster and removes the status line", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await shortcut(s);
+    s.clearNotices();
+    s.confirmImpl = () => true;
+    expect(s.press("x")).toBe(true);
+    await s.flush();
+    expect(s.confirms).toEqual([{ title: "Stop a?", message: STOP_MESSAGE }]);
+    expect(s.notices).toEqual([{ message: "stopped a", type: "info" }]);
+    expect(ws.loops()).toEqual([]);
+    expect(s.status()).toBeUndefined();
+    expect(s.widgets[s.widgets.length - 1]?.factory).toBeUndefined();
+    expect(s.editorKeys).toEqual([]);
+    s.clearNotices();
+    expect(await shortcut(s)).toBe(true);
+    expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
+  });
+
+  for (const yes of [false, true]) {
+    test(`the keys that answer the dialog pass to it untouched: they neither collapse nor move the roster, nor reach the editor (${yes ? "yes" : "no"})`, async () => {
+      const s = await three();
+      await shortcut(s);
+      s.press("j");
+      const open = s.status();
+      const keys = ["j", "k", DOWN, UP, "p", "r", "x", "h", SHORTCUT, yes ? ENTER : ESC];
+      const answered: Array<{ key: string; consumed: boolean; editorFocused: boolean; status: string | undefined }> = [];
+      s.confirmImpl = () => {
+        for (const key of keys) {
+          const consumed = s.press(key);
+          const focused = s.focused as { getText?: unknown } | undefined;
+          answered.push({ key, consumed, editorFocused: typeof focused?.getText === "function", status: s.status() });
+        }
+        return yes;
+      };
+      expect(s.press("x")).toBe(true);
+      await s.flush();
+      expect(answered).toEqual(keys.map((key) => ({ key, consumed: false, editorFocused: false, status: open })));
+      // The mock records each key no listener consumed. Each arrived while the dialog had focus, so the dialog received it, not the editor or pi's shortcut.
+      expect(s.editorKeys).toEqual(keys);
+      expect(s.shortcutErrors).toEqual([]);
+      expect(ws.loops().map((l) => [l.name, l.paused])).toEqual(
+        yes
+          ? [
+              ["a", false],
+              ["c", false],
+            ]
+          : [
+              ["a", false],
+              ["b", false],
+              ["c", false],
+            ],
+      );
+      expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER);
+      expect(selectedName(s)).toBe(yes ? "c" : "b");
+      expect(s.press("k")).toBe(true);
+      expect(selectedName(s)).toBe("a");
+      expect(s.editorKeys).toEqual(keys);
+    });
+  }
+
+  test("a stop dialog that outlives its session stops nothing: yes after a new session start leaves the loop", async () => {
+    const s = ws.startSession();
+    await s.command("1h --name a x");
+    await shortcut(s);
+    s.clearNotices();
+    s.confirmImpl = () => {
+      s.emit("session_start");
+      return true;
+    };
+    expect(s.press("x")).toBe(true);
+    await s.flush();
+    expect(s.confirms).toHaveLength(1);
+    expect(ws.loops().map((l) => l.name)).toEqual(["a"]);
+    expect(s.notices.map((n) => n.message)).not.toContain("stopped a");
+  });
+
+  test("with no selected loop, x is consumed and does nothing", async () => {
+    const s = ws.startSession();
+    await s.command("5m --max 1 once");
+    expect(s.status()).toBe("  fired loop-1 #1");
+    // Another session adds a loop this one has not read yet; the state file breaks before this one draws the roster.
+    await ws.startSession({ mode: "print" }).command("1h --name b y");
+    s.press(SHORTCUT);
+    fs.writeFileSync(ws.file(".pi-loop/loops.json"), "{");
+    await s.flush();
+    expect(s.status()).toBe("  fired loop-1 #1");
+    s.clearNotices();
+    expect(s.press("x")).toBe(true);
+    await s.flush();
+    expect(s.confirms).toEqual([]);
+    expect(s.notices).toEqual([]);
+    expect(file()).toBe("{");
+    expect(s.status()).toBe("  fired loop-1 #1");
+    expect(s.editorKeys).toEqual([]);
   });
 });
 

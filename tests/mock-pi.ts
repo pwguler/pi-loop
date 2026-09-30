@@ -250,7 +250,7 @@ export class Session implements LoopHost {
   focused: unknown = editorComponent();
   /** Every ctx.ui.confirm call. */
   readonly confirms: Array<{ title: string; message: string }> = [];
-  /** Scripted answer: what the user answers to confirm. */
+  /** Scripted answer: what the user answers to confirm. It runs while the dialog has focus, so keys it presses go to the dialog. */
   confirmImpl: (title: string, message: string) => boolean = () => false;
   /** Drives a ctx.ui.custom panel: read its lines, press keys. Default presses Esc. */
   customImpl: (panel: Panel) => void = (panel) => panel.handleInput?.("\x1b");
@@ -336,7 +336,14 @@ export class Session implements LoopHost {
         },
         async confirm(title: string, message: string) {
           self.confirms.push({ title, message });
-          return self.confirmImpl(title, message);
+          // Like pi: the dialog takes focus while it is open, and closing it gives focus back.
+          const before = self.focused;
+          self.focused = dialogComponent();
+          try {
+            return self.confirmImpl(title, message);
+          } finally {
+            self.focused = before;
+          }
         },
         custom<T>(factory: (tui: { requestRender(): void }, theme: WidgetTheme, keybindings: { matches(data: string, id: "tui.select.cancel"): boolean }, done: (result: T) => void) => Panel): Promise<T> {
           return new Promise<T>((resolve) => {

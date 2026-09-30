@@ -55,6 +55,8 @@ interface Session {
   roster?: { selected: string; index: number };
   /** A loop's detail panel, opened from the roster, has focus; keys are its own until it closes. */
   panelOpen?: boolean;
+  /** The stop confirmation, opened by x on the roster, has focus; keys are its own until it closes, and the roster stays drawn. */
+  confirmOpen?: boolean;
   /** Removes the terminal input listener; set in TUI mode only. */
   unsubscribe?: () => void;
   /** The registered widget's tui, through which every later change is redrawn; undefined while no widget is registered. */
@@ -254,13 +256,13 @@ export function run(pi: LoopHost, deps: Deps): void {
    * which pi runs after every listener let the key pass. Open: ↓/j and ↑/k move,
    * ↑/k on the first row,
    * Esc, and ROSTER_KEY collapse, p pauses and r resumes the selected loop
-   * through the typed command, and any other key collapses and passes
-   * through; Enter opens the selected loop's panel, and while it is open every
-   * key is the panel's. The cheap checks come first; nothing here reads the
-   * state file.
+   * through the typed command, x asks and stops it, and any other key
+   * collapses and passes through; Enter opens the selected loop's panel.
+   * While the panel or the stop confirmation is open every key is its own.
+   * The cheap checks come first; nothing here reads the state file.
    */
   function onKey(live: Session, data: string): { consume: true } | undefined {
-    if (isKeyRelease(data) || live.panelOpen) return undefined;
+    if (isKeyRelease(data) || live.panelOpen || live.confirmOpen) return undefined;
     // Holding the shortcut sends repeats: they leave the roster as it is, open or closed, instead of toggling it.
     if (isKeyRepeat(data) && matchesKey(data, ROSTER_KEY)) return { consume: true };
     const roster = live.roster;
@@ -287,6 +289,10 @@ export function run(pi: LoopHost, deps: Deps): void {
           .catch((e: unknown) => console.error(`pi-loop: ${message(e)}`))
           .finally(() => safely(render));
       }
+      return { consume: true };
+    }
+    if (matchesKey(data, "x")) {
+      if (loop) askStop(live, loop);
       return { consume: true };
     }
     if (matchesKey(data, "down") || matchesKey(data, "j")) {
@@ -324,6 +330,22 @@ export function run(pi: LoopHost, deps: Deps): void {
       .catch((e: unknown) => console.error(`pi-loop: ${message(e)}`))
       .finally(() => {
         live.panelOpen = false;
+        safely(render);
+      });
+  }
+
+  /**
+   * Ask to stop a loop from the open roster without waiting for the answer:
+   * the roster stays drawn, keys pass to the confirmation until it closes,
+   * then the roster is drawn again from the state file. A session that ended
+   * meanwhile is left alone; a failure is logged.
+   */
+  function askStop(live: Session, loop: Loop): void {
+    live.confirmOpen = true;
+    confirmStop(live.ctx, loop, () => session === live)
+      .catch((e: unknown) => console.error(`pi-loop: ${message(e)}`))
+      .finally(() => {
+        live.confirmOpen = false;
         safely(render);
       });
   }
@@ -499,9 +521,18 @@ export function run(pi: LoopHost, deps: Deps): void {
     if (action === "pause" || action === "resume") {
       await handle(`${action} ${loop.name}`, ctx);
     } else if (action === "stop") {
-      const yes = await ctx.ui.confirm(`Stop ${loop.name}?`, "The loop is removed. Its fires so far stay in the transcript.");
-      if (yes && current()) await handle(`stop ${loop.name}`, ctx);
+      await confirmStop(ctx, loop, current);
     }
+  }
+
+  /**
+   * Ask `Stop <name>?` and on yes run the typed `/loop stop <name>`, only while
+   * `current` still holds after the wait for the user. The panel and the
+   * roster both stop a loop through here.
+   */
+  async function confirmStop(ctx: LoopContext, loop: Loop, current: () => boolean): Promise<void> {
+    const yes = await ctx.ui.confirm(`Stop ${loop.name}?`, "The loop is removed. Its fires so far stay in the transcript.");
+    if (yes && current()) await handle(`stop ${loop.name}`, ctx);
   }
 }
 

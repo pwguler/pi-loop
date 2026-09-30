@@ -108,6 +108,8 @@ const STATUS_MIN = 7;
 /**
  * The roster: the header, then one row per loop with the selected one marked,
  * at most ROSTER_ROWS of them, the window scrolled to keep the selection in view.
+ * The header names p pause for an active selection, r resume for a paused one,
+ * and p pause when nothing is selected.
  * Columns are sized over every loop, not the window, so they hold still while scrolling.
  */
 export function rosterLines(loops: Loop[], owner: number | undefined, selected: number): Line[] {
@@ -116,7 +118,12 @@ export function rosterLines(loops: Loop[], owner: number | undefined, selected: 
     name: Math.min(NAME_MAX, Math.max(NAME_MIN, ...loops.map((l) => l.name.length))),
     status: Math.max(STATUS_MIN, ...loops.map((l) => loopStatus(l, owner).length)),
   };
-  const header: Line = [{ text: "loops", color: "muted" }, { text: " " }, { text: "\u00b7 \u2191\u2193/jk select \u00b7 p pause \u00b7 r resume \u00b7 enter open \u00b7 esc back", color: "dim" }];
+  const toggle = loops[selected]?.paused ? "r resume" : "p pause";
+  const header: Line = [
+    { text: "loops", color: "muted" },
+    { text: " " },
+    { text: `\u00b7 \u2191\u2193/jk select \u00b7 ${toggle} \u00b7 x stop \u00b7 enter open \u00b7 esc back`, color: "dim" },
+  ];
   const rows = loops.slice(start, start + ROSTER_ROWS).map((loop, i): Line => {
     const marker: Segment = start + i === selected ? { text: "\u203a", color: "accent" } : { text: " " };
     return [marker, { text: " " }, ...rosterRow(loop, owner, widths)];
@@ -165,6 +172,7 @@ export type PanelAction = "pause" | "resume" | "stop" | "back";
  * The loop's detail panel, drawn like pi's selector: border, blank, title,
  * blank, body, blank, hint line, blank, border. Single keys act: p pauses an
  * active loop, r resumes a paused one; the key that does not apply does nothing.
+ * The hint names the one of p and r that applies.
  */
 export function detailPanel(
   loop: Loop,
@@ -195,7 +203,7 @@ export function detailPanel(
         "",
         ...body,
         "",
-        ` ${hint("p", "pause")}  ${hint("r", "resume")}  ${hint("x", "stop")}  ${hint("escape/ctrl+c", "back")}`,
+        ` ${loop.paused ? hint("r", "resume") : hint("p", "pause")}  ${hint("x", "stop")}  ${hint("escape/ctrl+c", "back")}`,
         "",
         border,
       ];
