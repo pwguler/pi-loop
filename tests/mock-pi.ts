@@ -99,7 +99,9 @@ export interface OwnerFile {
 
 export interface LoopFile {
   name: string;
-  intervalMs: number;
+  /** Set for an interval loop; a cron loop has `cron` instead. */
+  intervalMs?: number;
+  cron?: string;
   prompt: { kind: "text"; text: string } | { kind: "file"; path: string };
   dueAt: number;
   fires: number;

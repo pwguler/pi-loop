@@ -1,13 +1,15 @@
 // /loop argument parsing: subcommands, flags at the head or the tail, the
-// interval phrase, and what is left as the prompt.
+// interval phrase or the cron expression at the head, and what is left as the
+// prompt.
 
-import { parseIntervalPhrase } from "./interval.ts";
-import { NAME_PATTERN, type Loop, type PromptSource, type Result } from "./types.ts";
+import { parseCronHead } from "./cron.ts";
+import { countedIntervals, parseIntervalPhrase } from "./interval.ts";
+import { NAME_PATTERN, type Loop, type PromptSource, type Result, type Schedule } from "./types.ts";
 
 type Command =
   | { kind: "list" }
   | { kind: "stop" | "pause" | "resume"; name: string }
-  | { kind: "create"; intervalMs: number; prompt: PromptSource; name?: string; max?: number; until?: number };
+  | { kind: "create"; schedule: Schedule; prompt: PromptSource; name?: string; max?: number; until?: number };
 
 interface Flags {
   name?: string;
@@ -15,7 +17,8 @@ interface Flags {
   until?: number;
 }
 
-const USAGE = "usage: /loop [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prompt with an interval: 5m, every 2 hours, hourly, daily | @file>";
+const USAGE =
+  "usage: /loop [--name <n>] [--max <n>] [--until <ISO|HH:mm>] <prompt with an interval: 5m, every 2 hours, hourly, daily | @file>, or /loop [flags] <cron: 0 9 * * 1-5> <prompt | @file>";
 
 export function parseCommand(args: string, now: number): Result<Command> {
   const [head, rest] = nextToken(args);
@@ -26,16 +29,16 @@ export function parseCommand(args: string, now: number): Result<Command> {
     return { ok: true, value: { kind: head, name } };
   }
 
-  // Flags sit at the head or the tail, before or after the interval; never inside the prompt.
-  // Tail flags go before the interval is looked for, so a flag value is never taken for one.
+  // Flags sit at the head or the tail, before or after the interval phrase or cron expression; never inside the prompt.
+  // Tail flags go before either is looked for, so a flag value is never taken for one.
   const flags: Flags = {};
   const lead = stripFlags(args, flags, now);
   if (!lead.ok) return lead;
   const tail = stripTailFlags(lead.value, flags, now);
   if (!tail.ok) return tail;
-  const interval = parseIntervalPhrase(tail.value);
-  if (!interval.ok) return interval;
-  const second = stripFlags(interval.value.rest, flags, now);
+  const schedule = parseSchedule(tail.value);
+  if (!schedule.ok) return schedule;
+  const second = stripFlags(schedule.value.rest, flags, now);
   if (!second.ok) return second;
   const third = stripTailFlags(second.value, flags, now);
   if (!third.ok) return third;
@@ -47,8 +50,32 @@ export function parseCommand(args: string, now: number): Result<Command> {
     : { kind: "text", text: promptText };
   return {
     ok: true,
-    value: { kind: "create", intervalMs: interval.value.ms, prompt, name: flags.name, max: flags.max, until: flags.until },
+    value: { kind: "create", schedule: schedule.value.schedule, prompt, name: flags.name, max: flags.max, until: flags.until },
   };
+}
+
+/**
+ * The loop's schedule, from the cron expression at the head or else from the
+ * one interval phrase that counts, and the text left once that is cut out. A
+ * cron expression beside an interval phrase that counts rejects.
+ */
+function parseSchedule(text: string): Result<{ schedule: Schedule; rest: string }> {
+  const head = parseCronHead(text);
+  if (head === undefined) {
+    const interval = parseIntervalPhrase(text);
+    if (interval === undefined) {
+      return {
+        ok: false,
+        error: "no interval or cron expression found: say 5m, every 2 hours, hourly, or daily, or start with five cron fields like 0 9 * * 1-5",
+      };
+    }
+    if (!interval.ok) return interval;
+    return { ok: true, value: { schedule: { intervalMs: interval.value.ms }, rest: interval.value.rest } };
+  }
+  if (!head.ok) return head;
+  const [phrase] = countedIntervals(text);
+  if (phrase) return { ok: false, error: `a cron expression and an interval: "${head.value.cron.text}" and "${phrase.text}"; say one` };
+  return { ok: true, value: { schedule: { cron: head.value.cron }, rest: head.value.rest } };
 }
 
 /** Consume leading --flag value pairs into flags; returns the remaining text. */

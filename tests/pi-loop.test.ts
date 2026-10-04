@@ -12,6 +12,8 @@ import { dialogComponent, editorComponent, TEST_MODEL, Workspace, type Session }
 // without timezone math: 2026-09-06 10:00 local.
 const T0 = new Date(2026, 8, 6, 10, 0, 0, 0).getTime();
 const MIN = 60_000;
+/** The error for a text with neither an interval phrase nor a cron expression at its head. */
+const NOT_FOUND = "no interval or cron expression found: say 5m, every 2 hours, hourly, or daily, or start with five cron fields like 0 9 * * 1-5";
 
 let ws: Workspace;
 
@@ -29,6 +31,20 @@ async function listText(s: Session): Promise<string> {
   return s.lastNotice();
 }
 
+/**
+ * Create loops at 09:59 and let the 10:00 grid point fire each once, one per tick: where a test
+ * that needs loops that have just fired starts. Every interval it is given has 10:00 on its grid.
+ */
+async function createFired(s: Session, ...commands: string[]): Promise<void> {
+  ws.clock.now = T0 - MIN;
+  for (const command of commands) await s.command(command);
+  ws.clock.now = T0;
+  for (let i = 0; i < commands.length; i++) {
+    ws.tick();
+    await s.flush();
+  }
+}
+
 beforeEach(() => {
   ws = new Workspace(T0);
 });
@@ -37,13 +53,33 @@ afterEach(() => {
   ws.dispose();
 });
 
-describe("AC-1 create fires immediately as one trailing user message", () => {
-  test("/loop 5m <prompt> fires [loop loop-1 #1 <YYYY-MM-DD HH:mm>] then the prompt", async () => {
+describe("AC-1 create fires nothing; the first fire is one trailing user message at the first grid point", () => {
+  test("/loop 5m <prompt> says next and fires nothing; at 10:05 it fires [loop loop-1 #1 <YYYY-MM-DD HH:mm>] then the prompt", async () => {
     const s = ws.startSession();
     await s.command("5m check the build");
+    expect(s.fires).toHaveLength(0);
+    expect(s.notices).toEqual([{ message: "created loop-1, every 5m, next 2026-09-06 10:05", type: "info" }]);
+    ws.clock.advance(5 * MIN - 1000);
+    ws.tick();
+    expect(s.fires).toHaveLength(0);
+    ws.clock.advance(1000);
+    ws.tick();
     expect(s.fires).toHaveLength(1);
-    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:00]\ncheck the build");
+    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:05]\ncheck the build");
     expect(s.fires[0]?.options).toEqual({ deliverAs: "followUp" });
+  });
+
+  test("a loop created between grid points first fires at the next one: 2h at 10:20 fires at 12:00", async () => {
+    const s = ws.startSession();
+    ws.clock.advance(20 * MIN);
+    await s.command("2h ping");
+    expect(s.lastNotice()).toBe("created loop-1, every 2h, next 2026-09-06 12:00");
+    ws.clock.advance(99 * MIN);
+    ws.tick();
+    expect(s.fires).toHaveLength(0);
+    ws.clock.advance(MIN);
+    ws.tick();
+    expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 12:00]\nping"]);
   });
 
   test("the interval phrase may lead or trail the prompt, with or without every/each", async () => {
@@ -63,9 +99,8 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
       ["every day check the build", "check the build", 1440 * MIN],
     ];
     for (const [input, prompt, ms] of cases) {
-      s.fires.length = 0;
       await s.command(`--name c ${input}`);
-      expect(s.fires.map((f) => f.text.split("\n").slice(1).join("\n"))).toEqual([prompt]);
+      expect(ws.loops().at(-1)?.prompt).toEqual({ kind: "text", text: prompt });
       expect(ws.loops().at(-1)?.intervalMs).toBe(ms);
       await s.command("stop c");
     }
@@ -74,16 +109,18 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
   test("in the middle of the text only every/each counts, and it is cut out cleanly", async () => {
     const s = ws.startSession();
     await s.command("check the build every 5 minutes and report");
-    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:00]\ncheck the build and report");
     await s.command("check the build, every 5 minutes, then report");
-    expect(s.fires[1]?.text).toBe("[loop loop-2 #1 2026-09-06 10:00]\ncheck the build then report");
+    expect(ws.loops().map((l) => l.prompt)).toEqual([
+      { kind: "text", text: "check the build and report" },
+      { kind: "text", text: "check the build then report" },
+    ]);
 
     // A bare duration in the middle is prompt text, not an interval.
     s.clearNotices();
     await s.command("wait 5 minutes then check the build");
-    expect(s.notices).toEqual([{ message: "no interval found: say 5m, every 2 hours, hourly, or daily", type: "error" }]);
+    expect(s.notices).toEqual([{ message: NOT_FOUND, type: "error" }]);
     await s.command("hourly wait 5 minutes then check the build");
-    expect(s.fires[2]?.text).toBe("[loop loop-3 #1 2026-09-06 10:00]\nwait 5 minutes then check the build");
+    expect(ws.loops()[2]?.prompt).toEqual({ kind: "text", text: "wait 5 minutes then check the build" });
   });
 
   test("at the tail only every/each, a compact form, hourly, or daily counts, so a duration in the prompt stays text", async () => {
@@ -97,9 +134,8 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
       ["check the build 90m", "check the build", 90 * MIN],
     ];
     for (const [input, prompt, ms] of cases) {
-      s.fires.length = 0;
       await s.command(`--name c ${input}`);
-      expect([input, s.fires.map((f) => f.text.split("\n").slice(1).join("\n"))]).toEqual([input, [prompt]]);
+      expect([input, ws.loops().at(-1)?.prompt]).toEqual([input, { kind: "text", text: prompt }]);
       expect(ws.loops().at(-1)?.intervalMs).toBe(ms);
       await s.command("stop c");
     }
@@ -107,7 +143,7 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
     for (const bad of ["summarize the day", "check the build 2 hours"]) {
       s.clearNotices();
       await s.command(bad);
-      expect(s.notices).toEqual([{ message: "no interval found: say 5m, every 2 hours, hourly, or daily", type: "error" }]);
+      expect(s.notices).toEqual([{ message: NOT_FOUND, type: "error" }]);
     }
     expect(ws.loops()).toHaveLength(0);
   });
@@ -115,9 +151,11 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
   test("an and/then left at the start of the prompt by a head phrase is dropped, whole words only", async () => {
     const s = ws.startSession();
     await s.command("1m and then ping");
-    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:00]\nping");
     await s.command("1m then-what");
-    expect(s.fires[1]?.text).toBe("[loop loop-2 #1 2026-09-06 10:00]\nthen-what");
+    expect(ws.loops().map((l) => l.prompt)).toEqual([
+      { kind: "text", text: "ping" },
+      { kind: "text", text: "then-what" },
+    ]);
   });
 
   test("two interval phrases reject with both shown and create nothing", async () => {
@@ -130,11 +168,20 @@ describe("AC-1 create fires immediately as one trailing user message", () => {
 
   test("below 1m, no unit, unknown unit, or no interval at all rejects and creates nothing", async () => {
     const s = ws.startSession();
-    for (const bad of ["30 seconds x", "30s x", "0m x", "every 0 minutes x", "5 x", "5x x", "m x", "check the build"]) {
+    const cases: Array<[string, string]> = [
+      ["30 seconds x", NOT_FOUND],
+      ["30s x", NOT_FOUND],
+      ["0m x", 'interval "0m" is below the minimum 1m'],
+      ["every 0 minutes x", 'interval "every 0 minutes" is below the minimum 1m'],
+      ["5 x", NOT_FOUND],
+      ["5x x", NOT_FOUND],
+      ["m x", NOT_FOUND],
+      ["check the build", NOT_FOUND],
+    ];
+    for (const [bad, error] of cases) {
       s.clearNotices();
       await s.command(bad);
-      expect(s.lastNotice()).toMatch(/interval/);
-      expect(s.notices[0]?.type).toBe("error");
+      expect([bad, s.notices]).toEqual([bad, [{ message: error, type: "error" }]]);
     }
     expect(ws.loops()).toHaveLength(0);
     expect(s.fires).toHaveLength(0);
@@ -156,45 +203,42 @@ describe("AC-2 a loop fires when due on its schedule, whether or not the agent i
   test("fires at the due tick, not before", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    s.settle();
     ws.clock.advance(4 * MIN + 59_000);
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     ws.clock.advance(1000);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
-    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:05]\nping");
+    expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:05]\nping"]);
   });
 
   test("a tick due while busy sends once at that tick as a follow-up, and the next due is the next grid point", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    s.settle();
 
     s.busy();
     ws.clock.advance(4 * MIN);
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
 
     // Due at 10:05; the tick at 10:07 is the first to see it.
     ws.clock.advance(3 * MIN);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
-    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:07]\nping");
-    expect(s.fires[1]?.options).toEqual({ deliverAs: "followUp" });
+    expect(s.fires).toHaveLength(1);
+    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:07]\nping");
+    expect(s.fires[0]?.options).toEqual({ deliverAs: "followUp" });
     ws.tick();
     ws.tick();
     s.settle();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
 
     // Next due is the grid point 10:10, whatever the send time.
     ws.clock.advance(2 * MIN + 59_000);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
     ws.clock.advance(1000);
     ws.tick();
-    expect(s.fires).toHaveLength(3);
-    expect(s.fires[2]?.text).toBe("[loop loop-1 #3 2026-09-06 10:10]\nping");
+    expect(s.fires).toHaveLength(2);
+    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:10]\nping");
   });
 
   test("two loops due in one tick while busy: one fires now, the other on the next tick, earlier due first, none dropped or doubled", async () => {
@@ -202,32 +246,32 @@ describe("AC-2 a loop fires when due on its schedule, whether or not the agent i
     await s.command("--name late 5m a");
     ws.clock.advance(MIN);
     await s.command("--name early 10m b");
-    s.settle();
-    s.fires.length = 0;
     // early is due at 10:10; late at 10:05. Reverse the file order.
     const loops = ws.loops();
     fs.writeFileSync(ws.file(".pi-loop/loops.json"), JSON.stringify([loops[1], loops[0]]));
     s.busy();
     ws.clock.advance(10 * MIN);
     ws.tick();
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop late #2 2026-09-06 10:11]"]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop late #1 2026-09-06 10:11]"]);
     ws.clock.advance(1000);
     ws.tick();
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop late #2 2026-09-06 10:11]", "[loop early #2 2026-09-06 10:11]"]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop late #1 2026-09-06 10:11]", "[loop early #1 2026-09-06 10:11]"]);
     expect(s.fires.every((f) => (f.options as { deliverAs?: string }).deliverAs === "followUp")).toBe(true);
     ws.tick();
     s.settle();
     expect(s.fires).toHaveLength(2);
-    expect(Object.fromEntries(ws.loops().map((l) => [l.name, l.fires]))).toEqual({ early: 2, late: 2 });
+    expect(Object.fromEntries(ws.loops().map((l) => [l.name, l.fires]))).toEqual({ early: 1, late: 1 });
   });
 
-  test("a create while busy queues its first fire at once", async () => {
+  test("a create while busy fires nothing; its first grid point while busy is queued as a follow-up", async () => {
     const s = ws.startSession();
     s.busy();
     await s.command("5m ping");
     expect(ws.loops()).toHaveLength(1);
-    expect(s.fires).toHaveLength(1);
-    expect(s.fires[0]?.options).toEqual({ deliverAs: "followUp" });
+    expect(s.fires).toHaveLength(0);
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires.map((f) => [f.text, f.options])).toEqual([["[loop loop-1 #1 2026-09-06 10:05]\nping", { deliverAs: "followUp" }]]);
     s.settle();
     expect(s.fires).toHaveLength(1);
   });
@@ -237,42 +281,40 @@ describe("AC-15 nothing is sent that pi would reject", () => {
   test("a fire due during compaction is not sent, keeps dueAt and fires, and goes out on the first tick after settle", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    s.settle();
     const before = ws.loops()[0];
     ws.clock.advance(6 * MIN);
     s.compacting();
     ws.tick();
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     expect(ws.loops()[0]).toEqual(before);
 
     ws.clock.advance(MIN);
     s.settle();
-    expect(s.fires).toHaveLength(2);
-    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:07]\nping");
+    expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:07]\nping"]);
   });
 
-  test("a loop created while pi compacts is not sent then, and fires once compaction ends and then follows the grid", async () => {
+  test("a loop created while pi compacts sends nothing then, and first fires at its grid point", async () => {
     ws.clock.now = at(10, 7);
     const s = ws.startSession();
     s.compacting();
     await s.command("1h ping");
     ws.tick();
     expect(s.fires).toHaveLength(0);
-    expect(ws.loops()[0]).toMatchObject({ fires: 0, dueAt: at(10, 7) });
+    expect(ws.loops()[0]).toMatchObject({ fires: 0, dueAt: at(11, 0) });
 
     ws.clock.now = at(10, 9);
     s.settle();
-    expect(s.fires).toHaveLength(1);
-    expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:09]\nping");
-    expect(ws.loops()[0]?.dueAt).toBe(at(11, 0));
+    expect(s.fires).toHaveLength(0);
+    ws.clock.now = at(11, 0);
+    ws.tick();
+    expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 11:00]\nping"]);
   });
 
   test("a run that starts between the check and pi's own check cannot lose a message: every send carries followUp", async () => {
     const s = ws.startSession();
     await s.command("1m --name a x");
     await s.command("1m --name b y");
-    s.settle();
     ws.clock.advance(MIN);
     ws.tick();
     s.busy();
@@ -281,7 +323,11 @@ describe("AC-15 nothing is sent that pi would reject", () => {
     ws.tick();
     s.settle();
     ws.tick();
-    expect(s.fires.length).toBeGreaterThanOrEqual(4);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual([
+      "[loop a #1 2026-09-06 10:01]",
+      "[loop b #1 2026-09-06 10:02]",
+      "[loop a #2 2026-09-06 10:02]",
+    ]);
     for (const f of s.fires) expect(f.options).toEqual({ deliverAs: "followUp" });
   });
 
@@ -290,9 +336,6 @@ describe("AC-15 nothing is sent that pi would reject", () => {
     s.autoStart = false;
     await s.command("--name a 1m x");
     await s.command("--name b 1m y");
-    s.startRun();
-    s.settle();
-    s.fires.length = 0;
 
     ws.clock.advance(MIN);
     ws.tick();
@@ -313,8 +356,6 @@ describe("AC-15 nothing is sent that pi would reject", () => {
     s.autoStart = false;
     await s.command("--name a 1m x");
     await s.command("--name b 1m y");
-    s.settle();
-    s.fires.length = 0;
 
     ws.clock.advance(MIN);
     ws.tick();
@@ -332,8 +373,6 @@ describe("AC-15 nothing is sent that pi would reject", () => {
     s.autoStart = false;
     await s.command("--name a 1m x");
     await s.command("--name b 1m y");
-    s.settle();
-    s.fires.length = 0;
 
     ws.clock.advance(MIN);
     ws.tick();
@@ -345,7 +384,6 @@ describe("AC-15 nothing is sent that pi would reject", () => {
   test("a run that ends without agent_settled cannot leave the session marked running: a compaction after it defers the fire", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    await s.flush();
     s.busy();
     // The run is aborted and agent_settled never arrives: pi is idle again.
     s.idle = true;
@@ -356,7 +394,7 @@ describe("AC-15 nothing is sent that pi would reject", () => {
     ws.clock.advance(6 * MIN);
     s.compacting();
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     expect(ws.loops()[0]).toEqual(before);
   });
 });
@@ -368,8 +406,8 @@ describe("AC-7 list, stop, pause, resume", () => {
     await s.command("2h --name nightly --max 4 pong");
     expect(await listText(s)).toBe(
       [
-        "loop-1  active  next 2026-09-06 10:05  every 5m  fires 1",
-        "nightly  active  next 2026-09-06 12:00  every 2h  fires 1  max 4",
+        "loop-1  active  next 2026-09-06 10:05  every 5m  fires 0",
+        "nightly  active  next 2026-09-06 12:00  every 2h  fires 0  max 4",
       ].join("\n"),
     );
   });
@@ -385,13 +423,9 @@ describe("AC-7 list, stop, pause, resume", () => {
     await s.command("5m --name b pong");
     await s.command("stop loop-1");
     expect(ws.loops().map((l) => l.name)).toEqual(["b"]);
-    ws.clock.advance(10 * MIN);
+    ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual([
-      "[loop loop-1 #1 2026-09-06 10:00]",
-      "[loop b #1 2026-09-06 10:00]",
-      "[loop b #2 2026-09-06 10:10]",
-    ]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop b #1 2026-09-06 10:05]"]);
     s.clearNotices();
     await s.command("stop nope");
     expect(s.notices[0]?.type).toBe("error");
@@ -401,6 +435,9 @@ describe("AC-7 list, stop, pause, resume", () => {
   test("pause halts firing and keeps the counter; resume sets the next due to the next grid point", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    s.settle();
     ws.clock.advance(MIN);
     await s.command("pause loop-1");
     expect(await listText(s)).toBe("loop-1  paused  next -  every 5m  fires 1");
@@ -410,15 +447,15 @@ describe("AC-7 list, stop, pause, resume", () => {
     s.settle();
     expect(s.fires).toHaveLength(1);
 
-    // Resume at 10:21: nothing fires now; next due is the grid point 10:25.
+    // Resume at 10:26: nothing fires now; next due is the grid point 10:30.
     await s.command("resume loop-1");
     ws.tick();
     expect(s.fires).toHaveLength(1);
-    expect(await listText(s)).toBe("loop-1  active  next 2026-09-06 10:25  every 5m  fires 1");
+    expect(await listText(s)).toBe("loop-1  active  next 2026-09-06 10:30  every 5m  fires 1");
     ws.clock.advance(4 * MIN);
     ws.tick();
     expect(s.fires).toHaveLength(2);
-    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:25]\nping");
+    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:30]\nping");
   });
 
   test("pause of a paused loop and resume of an active loop are errors", async () => {
@@ -440,8 +477,7 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
   test("only a prompt that is one @<path> token is a file; @ followed by more words is text", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("prompt.md"), "from the file\n");
-    await s.command("5m @alice please review the PR");
-    await s.command("every 50 min @prompt.md");
+    await createFired(s, "5m @alice please review the PR", "every 10 min @prompt.md");
     expect(ws.loops().map((l) => l.prompt)).toEqual([
       { kind: "text", text: "@alice please review the PR" },
       { kind: "file", path: "prompt.md" },
@@ -455,7 +491,7 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
   test("editing the file between fires changes the next fire's text", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("prompt.md"), "first version\n");
-    await s.command("5m @prompt.md");
+    await createFired(s, "5m @prompt.md");
     expect(s.fires[0]?.text).toBe("[loop loop-1 #1 2026-09-06 10:00]\nfirst version");
     expect(ws.loops()[0]?.prompt).toEqual({ kind: "file", path: "prompt.md" });
 
@@ -468,7 +504,7 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
   test("a missing file at fire time skips that fire, records the error in list, keeps the loop alive", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("prompt.md"), "v1");
-    await s.command("5m @prompt.md");
+    await createFired(s, "5m @prompt.md");
     fs.rmSync(ws.file("prompt.md"));
 
     ws.clock.advance(5 * MIN);
@@ -488,7 +524,7 @@ describe("AC-3 @file prompt source is re-read at every fire", () => {
   test("an empty file at fire time is a skip with its own error", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("prompt.md"), "   \n");
-    await s.command("5m @prompt.md");
+    await createFired(s, "5m @prompt.md");
     expect(s.fires).toHaveLength(0);
     expect(await listText(s)).toMatch(/error: prompt file prompt\.md is empty$/);
   });
@@ -528,9 +564,7 @@ describe("AC-4 state lives in <cwd>/.pi-loop/loops.json and survives a restart",
 
   test("a new session in the same cwd resumes every non-stopped loop with counter, prompt, interval, bounds", async () => {
     const a = ws.startSession();
-    await a.command("5m --max 10 --until 23:30 ping");
-    await a.command("2h --name nightly @notes.md");
-    await a.command("1h --name idle pong");
+    await createFired(a, "5m --max 10 --until 23:30 ping", "2h --name nightly @notes.md", "1h --name idle pong");
     await a.command("pause idle");
     await a.command("1m --name gone bye");
     await a.command("stop gone");
@@ -583,13 +617,13 @@ describe("AC-5 no catch-up: grid points missed while pi is not running are skipp
     expect(b.fires).toHaveLength(0);
 
     // The next point is 12:45.
-    expect(await listText(b)).toBe("loop-1  active  next 2026-09-06 12:45  every 45m  fires 1");
+    expect(await listText(b)).toBe("loop-1  active  next 2026-09-06 12:45  every 45m  fires 0");
     ws.clock.advance(4 * MIN);
     ws.tick();
     expect(b.fires).toHaveLength(0);
     ws.clock.advance(MIN);
     ws.tick();
-    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 12:45]\nping"]);
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 12:45]\nping"]);
   });
 
   test("a loop not yet due on resume waits for its grid point", async () => {
@@ -603,7 +637,7 @@ describe("AC-5 no catch-up: grid points missed while pi is not running are skipp
     expect(b.fires).toHaveLength(0);
     ws.clock.advance(10 * MIN);
     ws.tick();
-    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 10:30]\nping"]);
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:30]\nping"]);
   });
 });
 
@@ -614,25 +648,28 @@ describe("AC-6 one owner session per cwd", () => {
     expect(ws.owner()).toEqual({ pid: a.pid, sessionId: a.sessionId, claimedAt: T0 });
 
     const b = ws.startSession();
-    expect(await listText(b)).toBe(`loop-1  owned by pid ${a.pid}  next 2026-09-06 10:05  every 5m  fires 1`);
+    expect(await listText(b)).toBe(`loop-1  owned by pid ${a.pid}  next 2026-09-06 10:05  every 5m  fires 0`);
 
     ws.clock.advance(5 * MIN);
     ws.tick();
     b.settle();
-    expect(a.fires).toHaveLength(2);
+    expect(a.fires).toHaveLength(1);
     expect(b.fires).toHaveLength(0);
     expect(ws.owner()?.pid).toBe(a.pid);
 
     // A loop created from the non-owner is fired by the owner, not the creator.
     b.clearNotices();
     await b.command("5m --name second pong");
-    expect(b.lastNotice()).toBe(`created second, every 5m, owned by pid ${a.pid}`);
-    expect(b.fires).toHaveLength(0);
+    expect(b.lastNotice()).toBe(`created second, every 5m, next 2026-09-06 10:10, owned by pid ${a.pid}`);
+    ws.clock.advance(5 * MIN);
     ws.tick();
+    await a.flush();
+    ws.tick();
+    expect(b.fires).toHaveLength(0);
     expect(a.fires.map((f) => f.text.split("\n")[0])).toEqual([
-      "[loop loop-1 #1 2026-09-06 10:00]",
-      "[loop loop-1 #2 2026-09-06 10:05]",
-      "[loop second #1 2026-09-06 10:05]",
+      "[loop loop-1 #1 2026-09-06 10:05]",
+      "[loop loop-1 #2 2026-09-06 10:10]",
+      "[loop second #1 2026-09-06 10:10]",
     ]);
   });
 
@@ -648,7 +685,7 @@ describe("AC-6 one owner session per cwd", () => {
     expect(b.fires).toHaveLength(0);
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #2 2026-09-06 10:10]\nping"]);
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:10]\nping"]);
     expect(ws.owner()).toEqual({ pid: b.pid, sessionId: b.sessionId, claimedAt: T0 + 5 * MIN });
   });
 
@@ -682,7 +719,7 @@ describe("AC-6 one owner session per cwd", () => {
         p.shutdown();
       }
     }
-    expect(ws.loops().map((l) => l.fires)).toEqual([1]);
+    expect(ws.loops().map((l) => l.fires)).toEqual([0]);
   });
 
   test("an rpc /loop creates the loop and fires nothing; a TUI session started afterwards claims and fires it", async () => {
@@ -695,8 +732,11 @@ describe("AC-6 one owner session per cwd", () => {
     expect(ws.owner()).toBeUndefined();
     const t = ws.startSession();
     ws.tick();
-    expect(t.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:00]\nx"]);
+    expect(t.fires).toHaveLength(0);
     expect(ws.owner()).toEqual({ pid: t.pid, sessionId: t.sessionId, claimedAt: T0 });
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(t.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:05]\nx"]);
     expect(r.fires).toHaveLength(0);
   });
 });
@@ -717,7 +757,7 @@ describe("AC-8 names", () => {
 
   test("--name sets the name; an existing name rejects with an error and creates nothing", async () => {
     const s = ws.startSession();
-    await s.command("5m --name nightly a");
+    await createFired(s, "5m --name nightly a");
     expect(ws.loops().map((l) => l.name)).toEqual(["nightly"]);
     expect(s.fires[0]?.text).toBe("[loop nightly #1 2026-09-06 10:00]\na");
 
@@ -779,7 +819,7 @@ describe("AC-8 names", () => {
 describe("AC-9 bounds", () => {
   test("--max n removes the loop after its n-th fire and prints one line", async () => {
     const s = ws.startSession();
-    await s.command("5m --max 3 ping");
+    await createFired(s, "5m --max 3 ping");
     ws.clock.advance(5 * MIN);
     ws.tick();
     expect(ws.loops()).toHaveLength(1);
@@ -801,14 +841,17 @@ describe("AC-9 bounds", () => {
   test("--max 1 is a one-shot", async () => {
     const s = ws.startSession();
     await s.command("5m --max 1 once");
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-06 10:05]\nonce"]);
     expect(ws.loops()).toHaveLength(0);
     expect(s.lastNotice()).toBe("loop-1 reached max 1, removed");
   });
 
   test("--until HH:mm removes the loop at that time without firing it, and prints one line", async () => {
     const s = ws.startSession();
-    await s.command("5m --until 10:12 ping");
+    await createFired(s, "5m --until 10:12 ping");
     ws.clock.advance(5 * MIN);
     ws.tick();
     ws.clock.advance(5 * MIN);
@@ -826,7 +869,7 @@ describe("AC-9 bounds", () => {
 
   test("--until at a due instant removes without a fire", async () => {
     const s = ws.startSession();
-    await s.command("5m --until 10:05 ping");
+    await createFired(s, "5m --until 10:05 ping");
     ws.clock.advance(5 * MIN);
     ws.tick();
     expect(s.fires).toHaveLength(1);
@@ -840,7 +883,7 @@ describe("AC-9 bounds", () => {
     expected.setDate(expected.getDate() + 1);
     expected.setHours(9, 30, 0, 0);
     expect(ws.loops()[0]?.until).toBe(expected.getTime());
-    expect(await listText(s)).toBe("tomorrow  active  next 2026-09-06 11:00  every 1h  fires 1  until 2026-09-07 09:30");
+    expect(await listText(s)).toBe("tomorrow  active  next 2026-09-06 11:00  every 1h  fires 0  until 2026-09-07 09:30");
 
     await s.command("1h --name iso --until 2026-09-06T18:00 b");
     expect(ws.loops()[1]?.until).toBe(new Date(2026, 8, 6, 18, 0, 0, 0).getTime());
@@ -867,7 +910,7 @@ describe("AC-9 bounds", () => {
 
   test("both bounds together: whichever comes first removes the loop", async () => {
     const s = ws.startSession();
-    await s.command("5m --max 5 --until 10:07 ping");
+    await createFired(s, "5m --max 5 --until 10:07 ping");
     ws.clock.advance(5 * MIN);
     ws.tick();
     ws.clock.advance(2 * MIN);
@@ -881,7 +924,7 @@ describe("AC-9 bounds", () => {
 describe("AC-12 loop state is never read from conversation history", () => {
   test("compaction between two fires changes nothing: counter, due, prompt", async () => {
     const s = ws.startSession();
-    await s.command("5m ping");
+    await createFired(s, "5m ping");
     const before = ws.loops();
 
     // Compaction rewrites the transcript; the extension has no handler for it and reads no entries.
@@ -923,8 +966,6 @@ describe("AC-S1 the owner line reads counts and the next fire", () => {
     await s.command("5m --name fast b");
     await s.command("1m --name idle c");
     await s.command("pause idle");
-    ws.clock.advance(5000);
-    ws.tick();
     expect(s.status()).toBe(`  2 active loops, 1 paused · next fast 10:05${HINT}`);
 
     await s.command("resume idle");
@@ -936,12 +977,26 @@ describe("AC-S1 the owner line reads counts and the next fire", () => {
     expect(s.status()).toBe(`  1 active loop · next fast 10:05${HINT}`);
 
     await s.command("2h --name slow a");
-    ws.clock.advance(5000);
     await s.command("pause fast");
     await s.command("pause slow");
     expect(s.status()).toBe(`  2 paused loops${HINT}`);
     await s.command("stop slow");
     expect(s.status()).toBe(`  1 paused loop${HINT}`);
+  });
+
+  test("the next time reads HH:mm when at most 24 hours away and MM-DD HH:mm when later", async () => {
+    const s = ws.startSession();
+    await s.command("--name tue 0 9 * * 2 x");
+    expect(s.status()).toBe(`  1 active loop · next tue 09-08 09:00${HINT}`);
+    await s.command("--name mon 0 10 * * 1 y");
+    expect(s.status()).toBe(`  2 active loops · next mon 10:00${HINT}`);
+    await s.command("stop mon");
+    ws.clock.now = new Date(2026, 8, 7, 8, 59, 59, 999).getTime();
+    ws.tick();
+    expect(s.status()).toBe(`  1 active loop · next tue 09-08 09:00${HINT}`);
+    ws.clock.now = new Date(2026, 8, 7, 9, 0, 0, 0).getTime();
+    ws.tick();
+    expect(s.status()).toBe(`  1 active loop · next tue 09:00${HINT}`);
   });
 });
 
@@ -949,16 +1004,17 @@ describe("AC-S2 a fire pulses for five seconds", () => {
   test("fired <name> #<fires> replaces next, counts and hint stay, then next returns", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
-    ws.clock.advance(5000);
-    ws.tick();
     await s.command("5m --name fast b");
+    expect(s.status()).toBe(`  2 active loops · next fast 10:05${HINT}`);
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     expect(s.status()).toBe(`  2 active loops · fired fast #1${HINT}`);
     ws.clock.advance(4999);
     ws.tick();
     expect(s.status()).toBe(`  2 active loops · fired fast #1${HINT}`);
     ws.clock.advance(1);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · next fast 10:05${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · next fast 10:10${HINT}`);
 
     ws.clock.advance(5 * MIN - 5000);
     ws.tick();
@@ -968,15 +1024,20 @@ describe("AC-S2 a fire pulses for five seconds", () => {
   test("a second fire inside the five seconds replaces the pulse", async () => {
     const s = ws.startSession();
     await s.command("5m --name a x");
-    ws.clock.advance(2000);
     await s.command("5m --name b y");
-    expect(s.status()).toBe(`  2 active loops · fired b #1${HINT}`);
-    ws.clock.advance(3000);
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.status()).toBe(`  2 active loops · fired a #1${HINT}`);
+    await s.flush();
+    ws.clock.advance(1000);
     ws.tick();
     expect(s.status()).toBe(`  2 active loops · fired b #1${HINT}`);
-    ws.clock.advance(2000);
+    ws.clock.advance(4000);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · next a 10:05${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · fired b #1${HINT}`);
+    ws.clock.advance(1000);
+    ws.tick();
+    expect(s.status()).toBe(`  2 active loops · next a 10:10${HINT}`);
   });
 });
 
@@ -984,8 +1045,6 @@ describe("AC-S3 due while the fire is deferred", () => {
   test("an overdue active loop whose fire compaction defers reads due <name> with no time, then fires after settle", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    ws.clock.advance(5000);
-    ws.tick();
     expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
     s.settle();
     s.compacting();
@@ -996,7 +1055,7 @@ describe("AC-S3 due while the fire is deferred", () => {
     ws.tick();
     expect(s.status()).toBe(`  1 active loop · due loop-1${HINT}`);
     s.settle();
-    expect(s.status()).toBe(`  1 active loop · fired loop-1 #2${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · fired loop-1 #1${HINT}`);
   });
 });
 
@@ -1049,12 +1108,16 @@ describe("AC-S6 no loops removes the widget", () => {
     const s = ws.startSession();
     expect(s.widgets).toHaveLength(0);
     await s.command("5m ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     expect(s.status()).toBe(`  1 active loop · fired loop-1 #1${HINT}`);
     await s.command("stop loop-1");
     expect(s.status()).toBeUndefined();
     expect(s.widgets[s.widgets.length - 1]).toEqual({ key: "pi-loop", factory: undefined, placement: undefined });
 
     await s.command("5m --max 1 once");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     expect(s.status()).toBe("  fired loop-1 #1");
     ws.clock.advance(4000);
     ws.tick();
@@ -1068,9 +1131,9 @@ describe("AC-S6 no loops removes the widget", () => {
   test("stop of a loop other than the one pulsing keeps the pulse", async () => {
     const s = ws.startSession();
     await s.command("2h --name a x");
-    ws.clock.advance(5000);
-    ws.tick();
     await s.command("5m --name b y");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     await s.command("stop a");
     expect(s.status()).toBe(`  1 active loop · fired b #1${HINT}`);
   });
@@ -1080,8 +1143,6 @@ describe("AC-S7 requestRender only when the text changes", () => {
   test("ten idle ticks with nothing changing make no setWidget and no requestRender call", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    ws.clock.advance(5000);
-    ws.tick();
     const widgets = s.widgets.length;
     const renders = s.requestRenders;
     for (let i = 0; i < 10; i++) {
@@ -1098,8 +1159,6 @@ describe("AC-S8 commands update the line in the same call", () => {
   test("create, pause, resume, stop each render without a tick", async () => {
     const s = ws.startSession();
     await s.command("2h --name a x");
-    ws.clock.advance(5000);
-    ws.tick();
     const seen: Array<string | undefined> = [];
     await s.command("5m --name b y");
     seen.push(s.status());
@@ -1110,9 +1169,9 @@ describe("AC-S8 commands update the line in the same call", () => {
     await s.command("stop b");
     seen.push(s.status());
     expect(seen).toEqual([
-      `  2 active loops · fired b #1${HINT}`,
-      `  1 active loop, 1 paused · fired b #1${HINT}`,
-      `  2 active loops · fired b #1${HINT}`,
+      `  2 active loops · next b 10:05${HINT}`,
+      `  1 active loop, 1 paused · next a 12:00${HINT}`,
+      `  2 active loops · next b 10:05${HINT}`,
       `  1 active loop · next a 12:00${HINT}`,
     ]);
   });
@@ -1127,8 +1186,6 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     await s.command("5m --name fast a");
     await s.command("1h --name p b");
     await s.command("pause p");
-    ws.clock.advance(5000);
-    ws.tick();
     expect(s.styled()).toBe(`  ${label("1 active loop, 1 paused")} · ${detail("next fast 10:05 · alt+l to manage")}`);
   });
 
@@ -1145,13 +1202,14 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
   test("fired pulse: the fired clause is in the dim detail, not bold", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("fired loop-1 #1 · alt+l to manage")}`);
   });
 
   test("all paused: muted count, plain joiner, dim hint alone", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    ws.clock.advance(5000);
     await s.command("pause loop-1");
     expect(s.styled()).toBe(`  ${label("1 paused loop")} · ${detail("alt+l to manage")}`);
   });
@@ -1174,12 +1232,16 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     ws.tick();
     expect(s.styled()).toBe(`  ${label("2 active loops")} · ${detail("next a 10:10 · 1 error · alt+l to manage")}`);
     await s.command("1m --name c now");
+    ws.clock.advance(MIN);
+    ws.tick();
     expect(s.styled()).toBe(`  ${label("3 active loops")} · ${detail("fired c #1 · 1 error · alt+l to manage")}`);
   });
 
   test("pulse only: no loops remain after --max; the fired clause is the muted label alone", async () => {
     const s = ws.startSession();
     await s.command("5m --name once --max 1 ping");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     expect(s.styled()).toBe(`  ${label("fired once #1")}`);
   });
 
@@ -1190,7 +1252,7 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     if (!factory) throw new Error("no widget registered");
     const other = { fg: (color: string, text: string) => `[${color}]${text}`, bold: (text: string) => `*${text}` };
     const line = factory({ requestRender() {} }, other).render(200)[0];
-    expect(line).toBe(`  [muted]1 active loop · [dim]fired loop-1 #1 · alt+l to manage`);
+    expect(line).toBe(`  [muted]1 active loop · [dim]next loop-1 10:05 · alt+l to manage`);
   });
 });
 
@@ -1205,14 +1267,12 @@ describe("AC-S11 the line is one below-editor widget, redrawn through requestRen
     expect(s.widgets[0]?.placement).toBe("belowEditor");
     expect(s.requestRenders).toBe(0);
 
-    ws.clock.advance(5000);
-    ws.tick();
     await s.command("5m --name b y");
     await s.command("pause b");
     await s.command("resume b");
     await s.command("stop b");
     expect(s.widgets).toHaveLength(1);
-    expect(s.requestRenders).toBe(5);
+    expect(s.requestRenders).toBe(4);
     expect(s.status()).toBe(`  1 active loop · next a 12:00${HINT}`);
 
     await s.command("stop a");
@@ -1222,7 +1282,7 @@ describe("AC-S11 the line is one below-editor widget, redrawn through requestRen
     await s.command("5m --name c z");
     expect(s.widgets).toHaveLength(3);
     expect(s.widgets[2]?.placement).toBe("belowEditor");
-    expect(s.status()).toBe(`  1 active loop · fired c #1${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next c 10:05${HINT}`);
   });
 });
 
@@ -1254,7 +1314,7 @@ describe("AC-S12 every rendered line fits its width", () => {
 describe("AC-S10 the fire header displays as a plain line", () => {
   test("a fired message is stored plain and displayed as the one line <name> #<n> · <time>; the prompt is not shown", async () => {
     const s = ws.startSession();
-    await s.command("5m --name nightly check the build\nthen report");
+    await createFired(s, "5m --name nightly check the build\nthen report");
     const stored = s.fires[0]?.text ?? "";
     expect(stored).toBe("[loop nightly #1 2026-09-06 10:00]\ncheck the build\nthen report");
     expect(s.display(stored)).toBe("nightly #1 · 2026-09-06 10:00");
@@ -1373,11 +1433,11 @@ describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay 
     await s.command("5m --name fast b");
     const line = s.status();
     expect(await shortcut(s)).toBe(true);
-    expect(s.status()?.split("\n").slice(0, 2)).toEqual([ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #1"]);
+    expect(s.status()?.split("\n").slice(0, 2)).toEqual([ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #0"]);
     expect(s.press(ESC)).toBe(true);
     expect(s.status()).toBe(line);
     expect(await shortcut(s)).toBe(true);
-    expect(s.status()?.split("\n")[1]).toBe("  › slow        active   next 12:00  every 2h  #1");
+    expect(s.status()?.split("\n")[1]).toBe("  › slow        active   next 12:00  every 2h  #0");
     expect(s.editorKeys).toEqual([]);
   });
 
@@ -1499,6 +1559,8 @@ describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay 
   test("the pulse-only line has no loops behind it: the shortcut notifies no loops and nothing opens", async () => {
     const s = ws.startSession();
     await s.command("5m --max 1 once");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     expect(s.status()).toBe("  fired loop-1 #1");
     s.clearNotices();
     expect(await shortcut(s)).toBe(true);
@@ -1604,12 +1666,12 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await a.command("pause fast");
     await shortcut(a);
     expect(a.status()).toBe(
-      [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #1", "    fast        paused   next -      every 5m  #1"].join("\n"),
+      [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #0", "    fast        paused   next -      every 5m  #0"].join("\n"),
     );
     const b = ws.startSession();
     ws.tick();
     await shortcut(b);
-    expect(b.status()?.split("\n")[1]).toBe(`  › slow        owned by pid ${a.pid}  next 12:00  every 2h  #1`);
+    expect(b.status()?.split("\n")[1]).toBe(`  › slow        owned by pid ${a.pid}  next 12:00  every 2h  #0`);
   });
 
   test("colors: loops muted, rest of the header dim, marker accent, status by state, everything else default", async () => {
@@ -1621,8 +1683,8 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     expect(a.styled()).toBe(
       [
         "  <muted>loops</muted> <dim>· ↑↓/jk select · p pause · x stop · enter open · esc back</dim>",
-        "  <accent>›</accent> slow        <success>active</success>   next 12:00  every 2h  #1",
-        "    fast        <dim>paused</dim>   next -      every 5m  #1",
+        "  <accent>›</accent> slow        <success>active</success>   next 12:00  every 2h  #0",
+        "    fast        <dim>paused</dim>   next -      every 5m  #0",
       ].join("\n"),
     );
     const b = ws.startSession();
@@ -1630,8 +1692,8 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await shortcut(b);
     b.press(DOWN);
     expect(b.styled()?.split("\n").slice(1)).toEqual([
-      `    slow        <muted>owned by pid ${a.pid}</muted>  next 12:00  every 2h  #1`,
-      `  <accent>›</accent> fast        <dim>paused</dim>             next -      every 5m  #1`,
+      `    slow        <muted>owned by pid ${a.pid}</muted>  next 12:00  every 2h  #0`,
+      `  <accent>›</accent> fast        <dim>paused</dim>             next -      every 5m  #0`,
     ]);
   });
 
@@ -1641,8 +1703,8 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await a.command("5m --name a y");
     await shortcut(a);
     expect(a.status()?.split("\n").slice(1)).toEqual([
-      "  › nightly-build  active   next 12:00  every 2h  #1",
-      "    a              active   next 10:05  every 5m  #1",
+      "  › nightly-build  active   next 12:00  every 2h  #0",
+      "    a              active   next 10:05  every 5m  #0",
     ]);
     a.press(ESC);
     await a.command("1h --name sixteen-chars-ok z");
@@ -1650,19 +1712,33 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await a.command("pause a");
     await shortcut(a);
     expect(a.status()?.split("\n").slice(1)).toEqual([
-      "  › nightly-build     active   next 12:00  every 2h  #1",
-      "    a                 paused   next -      every 5m  #1",
-      "    sixteen-chars-ok  active   next 11:00  every 1h  #1",
-      "    seventeen-chars…  active   next 11:00  every 1h  #1",
+      "  › nightly-build     active   next 12:00  every 2h  #0",
+      "    a                 paused   next -      every 5m  #0",
+      "    sixteen-chars-ok  active   next 11:00  every 1h  #0",
+      "    seventeen-chars…  active   next 11:00  every 1h  #0",
     ]);
     const b = ws.startSession();
     ws.tick();
     await shortcut(b);
     expect(b.status()?.split("\n").slice(1)).toEqual([
-      `  › nightly-build     owned by pid ${a.pid}  next 12:00  every 2h  #1`,
-      "    a                 paused             next -      every 5m  #1",
-      `    sixteen-chars-ok  owned by pid ${a.pid}  next 11:00  every 1h  #1`,
-      `    seventeen-chars…  owned by pid ${a.pid}  next 11:00  every 1h  #1`,
+      `  › nightly-build     owned by pid ${a.pid}  next 12:00  every 2h  #0`,
+      "    a                 paused             next -      every 5m  #0",
+      `    sixteen-chars-ok  owned by pid ${a.pid}  next 11:00  every 1h  #0`,
+      `    seventeen-chars…  owned by pid ${a.pid}  next 11:00  every 1h  #0`,
+    ]);
+  });
+
+  test("the next column fits the longest time, at least 5, and the schedule column the longest schedule, so #fires lines up", async () => {
+    const s = ws.startSession();
+    await s.command("--name tue 0 9 * * 2 x");
+    await s.command("--name build 15m y");
+    await s.command("--name idle 1h z");
+    await s.command("pause idle");
+    await shortcut(s);
+    expect(s.status()?.split("\n").slice(1)).toEqual([
+      "  › tue         active   next 09-08 09:00  cron 0 9 * * 2  #0",
+      "    build       active   next 10:15        every 15m       #0",
+      "    idle        paused   next -            every 1h        #0",
     ]);
   });
 
@@ -1692,8 +1768,8 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     const widget = factory({ requestRender() {} }, ansi);
     expect(widget.render(200).map(stripAnsi)).toEqual([
       ROSTER_HEADER,
-      "  › a-rather-long-l…  active   next 12:00  every 2h  #1",
-      "    b                 active   next 10:05  every 5m  #1",
+      "  › a-rather-long-l…  active   next 12:00  every 2h  #0",
+      "    b                 active   next 10:05  every 5m  #0",
     ]);
     for (let width = 1; width <= 80; width++) {
       const lines = widget.render(width);
@@ -1873,8 +1949,6 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
 
   test("ticks with nothing changing leave the open roster alone", async () => {
     const s = await three();
-    ws.clock.advance(5000);
-    ws.tick();
     await shortcut(s);
     const open = s.status();
     expect(open?.startsWith(ROSTER_HEADER)).toBe(true);
@@ -1930,7 +2004,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
         " interval   5m",
         " prompt     ping",
         " next       2026-09-06 10:05",
-        " fires      1",
+        " fires      0",
         " status     active",
         "",
         " p pause  x stop  escape/ctrl+c back",
@@ -1945,7 +2019,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
         " interval   2h",
         " prompt     @p.md",
         " next       2026-09-06 12:00",
-        " fires      1",
+        " fires      0",
         " status     active",
         " max        10",
         " until      2026-09-06 23:30",
@@ -2166,8 +2240,6 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     const s = ws.startSession();
     await s.command("5m --name a ping");
     await s.command("1h --name b pong");
-    ws.clock.advance(5000);
-    ws.tick();
     s.clearNotices();
     const seen = panel(s, ["p", "r"]);
     await shortcut(s);
@@ -2176,11 +2248,11 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     await s.flush();
     expect(s.notices.map((n) => n.message)).toEqual(["paused b"]);
     expect(ws.loops()[1]?.paused).toBe(true);
-    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`);
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #0`);
     s.press(ENTER);
     await s.flush();
     expect(s.notices.map((n) => n.message)).toEqual(["paused b", "resumed b, next 2026-09-06 11:00"]);
-    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #1`);
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #0`);
     expect(seen.map((lines) => lines.find((l) => l.includes("escape/ctrl+c")))).toEqual([
       " p pause  x stop  escape/ctrl+c back",
       " r resume  x stop  escape/ctrl+c back",
@@ -2203,7 +2275,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     p.key("p");
     await s.flush();
     expect(s.notices.map((n) => n.message)).toEqual(["paused a"]);
-    expect(s.status()?.split("\n")[1]).toBe(`  › ${"a".padEnd(10)}  paused   next -      every 1h  #1`);
+    expect(s.status()?.split("\n")[1]).toBe(`  › ${"a".padEnd(10)}  paused   next -      every 1h  #0`);
     s.press(ENTER);
     expect(p.opened()).toBe(2);
     const paused = fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8");
@@ -2215,7 +2287,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     p.key("r");
     await s.flush();
     expect(s.notices.map((n) => n.message)).toEqual(["paused a", "resumed a, next 2026-09-06 11:00"]);
-    expect(s.status()?.split("\n")[1]).toBe(`  › ${"a".padEnd(10)}  active   next 11:00  every 1h  #1`);
+    expect(s.status()?.split("\n")[1]).toBe(`  › ${"a".padEnd(10)}  active   next 11:00  every 1h  #0`);
     expect(p.opened()).toBe(2);
   });
 
@@ -2235,7 +2307,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     expect(s.notices).toEqual([{ message: "paused b", type: "info" }]);
     expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER_PAUSED);
     expect(selectedName(s)).toBe("b");
-    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`);
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #0`);
     expect(s.editorKeys).toEqual([]);
   });
 
@@ -2255,7 +2327,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     expect(b?.dueAt).toBe(T0 + 10 * MIN);
     expect(s.notices).toEqual([{ message: "resumed b, next 2026-09-06 10:10", type: "info" }]);
     expect(selectedName(s)).toBe("b");
-    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  active   next 10:10  every 5m  #1`);
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  active   next 10:10  every 5m  #0`);
     expect(s.editorKeys).toEqual([]);
   });
 
@@ -2409,14 +2481,14 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
     expect(s.notices).toEqual([{ message: "stopped b", type: "info" }]);
     expect(ws.loops().map((l) => l.name)).toEqual(["a", "c"]);
     expect(s.status()).toBe(
-      [ROSTER_HEADER, `    ${"a".padEnd(10)}  active   next 11:00  every 1h  #1`, `  › ${"c".padEnd(10)}  active   next 11:00  every 1h  #1`].join("\n"),
+      [ROSTER_HEADER, `    ${"a".padEnd(10)}  active   next 11:00  every 1h  #0`, `  › ${"c".padEnd(10)}  active   next 11:00  every 1h  #0`].join("\n"),
     );
     expect(s.press("x")).toBe(true);
     await s.flush();
     expect(s.confirms.map((c) => c.title)).toEqual(["Stop b?", "Stop c?"]);
     expect(s.notices.map((n) => n.message)).toEqual(["stopped b", "stopped c"]);
     expect(ws.loops().map((l) => l.name)).toEqual(["a"]);
-    expect(s.status()).toBe([ROSTER_HEADER, `  › ${"a".padEnd(10)}  active   next 11:00  every 1h  #1`].join("\n"));
+    expect(s.status()).toBe([ROSTER_HEADER, `  › ${"a".padEnd(10)}  active   next 11:00  every 1h  #0`].join("\n"));
     expect(s.press(ESC)).toBe(true);
     expect(s.status()).toBe("  1 active loop · next a 11:00 · alt+l to manage");
     expect(s.editorKeys).toEqual([]);
@@ -2516,6 +2588,8 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
   test("with no selected loop, x is consumed and does nothing", async () => {
     const s = ws.startSession();
     await s.command("5m --max 1 once");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
     expect(s.status()).toBe("  fired loop-1 #1");
     // Another session adds a loop this one has not read yet; the state file breaks before this one draws the roster.
     await ws.startSession({ mode: "print" }).command("1h --name b y");
@@ -2569,7 +2643,7 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
     await shortcut(s);
     const roster = s.status();
     expect(roster).toBe(
-      [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #1", "    fast        active   next 10:05  every 5m  #1"].join("\n"),
+      [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #0", "    fast        active   next 10:05  every 5m  #0"].join("\n"),
     );
     s.press(ESC);
     const file = ws.file(".pi-loop/loops.json");
@@ -2595,16 +2669,16 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
     const other = ws.startSession();
     await other.command("1h --name b y");
     await s.command("");
-    expect(s.status()?.split("\n").slice(1)).toEqual([`  › ${"b".padEnd(10)}  active   next 10:00  every 1h  #0`]);
+    expect(s.status()?.split("\n").slice(1)).toEqual([`  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #0`]);
     await s.command("1h --name c z");
     s.press("j");
     expect(selectedName(s)).toBe("c");
     await other.command("1h --name d w");
     await s.command("list");
     expect(s.status()?.split("\n").slice(1)).toEqual([
-      `  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #1`,
-      `    ${"c".padEnd(10)}  active   next 10:00  every 1h  #0`,
-      `    ${"d".padEnd(10)}  active   next 10:00  every 1h  #0`,
+      `  › ${"b".padEnd(10)}  active   next 11:00  every 1h  #0`,
+      `    ${"c".padEnd(10)}  active   next 11:00  every 1h  #0`,
+      `    ${"d".padEnd(10)}  active   next 11:00  every 1h  #0`,
     ]);
   });
 
@@ -2618,7 +2692,7 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
       expect(s.status()).toBeUndefined();
     }
     await s.command("5m ping");
-    expect(s.status()).toBe(`  1 active loop · fired loop-1 #1${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
   });
 
   test("TUI without a started session, reachable only after shutdown: the command fails loudly instead of opening nothing", async () => {
@@ -2654,8 +2728,8 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
         expect(p.notices).toHaveLength(1);
         expect(p.notices[0]?.type).toBe("info");
         const [first, second, ...rest] = p.lastNotice().split("\n");
-        expect(first).toMatch(/^a  active  next 2026-09-06 10:10  every 5m  fires 1  max 3  until 2026-09-06 23:30  error: prompt file p\.md: .*ENOENT/);
-        expect(second).toBe("b  paused  next -  every 1h  fires 1");
+        expect(first).toMatch(/^a  active  next 2026-09-06 10:10  every 5m  fires 0  max 3  until 2026-09-06 23:30  error: prompt file p\.md: .*ENOENT/);
+        expect(second).toBe("b  paused  next -  every 1h  fires 0");
         expect(rest).toEqual([]);
         expect(p.status()).toBe(line);
         expect(p.press("j")).toBe(false);
@@ -2701,19 +2775,19 @@ describe("AC-R9 the open roster follows live changes by the next tick", () => {
     const other = ws.startSession();
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()?.split("\n")[1]).toBe(`    ${"a".padEnd(10)}  active   next 10:10  every 5m  #2`);
+    expect(s.status()?.split("\n")[1]).toBe(`    ${"a".padEnd(10)}  active   next 10:10  every 5m  #1`);
     await other.command("pause b");
     ws.tick();
-    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`);
+    expect(s.status()?.split("\n")[2]).toBe(`  › ${"b".padEnd(10)}  paused   next -      every 1h  #0`);
     await other.command("stop a");
     ws.tick();
-    expect(s.status()?.split("\n").slice(1)).toEqual([`  › ${"b".padEnd(10)}  paused   next -      every 1h  #1`]);
+    expect(s.status()?.split("\n").slice(1)).toEqual([`  › ${"b".padEnd(10)}  paused   next -      every 1h  #0`]);
   });
 
   test("a removed selection moves to the row now at its index, or the last row; no loops closes the roster and removes the line", async () => {
     const s = ws.startSession();
     for (const name of ["a", "b", "c", "d"]) await s.command(`1h --name ${name} x`);
-    await s.command("5m --name m --max 2 y");
+    await s.command("5m --name m --max 1 y");
     await shortcut(s);
     s.press("j");
     s.press("j");
@@ -2730,7 +2804,7 @@ describe("AC-R9 the open roster follows live changes by the next tick", () => {
     expect(selectedName(s)).toBe("d");
     for (const name of ["a", "b", "d"]) await other.command(`stop ${name}`);
     ws.tick();
-    expect(s.status()).toBe("  fired m #2");
+    expect(s.status()).toBe("  fired m #1");
     ws.clock.advance(5000);
     ws.tick();
     expect(s.status()).toBeUndefined();
@@ -2951,14 +3025,16 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
   });
 });
 
-describe("AC-N1 the name is settled before the loop is saved and fired", () => {
-  test("the first fire's header, the create notice, and loops.json carry the model's name", async () => {
+describe("AC-N1 the name is settled before the loop is saved", () => {
+  test("the create notice, loops.json, and the first fire's header carry the model's name", async () => {
     const s = modelSession();
     s.modelAnswer = { text: "stale-reviews" };
     await s.command(`5m ${LONG}`);
-    expect(s.fires.map((f) => f.text)).toEqual([`[loop stale-reviews #1 2026-09-06 10:00]\n${LONG}`]);
-    expect(s.notices).toEqual([{ message: "created stale-reviews, every 5m", type: "info" }]);
+    expect(s.notices).toEqual([{ message: "created stale-reviews, every 5m, next 2026-09-06 10:05", type: "info" }]);
     expect(ws.loops().map((l) => l.name)).toEqual(["stale-reviews"]);
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.fires.map((f) => f.text)).toEqual([`[loop stale-reviews #1 2026-09-06 10:05]\n${LONG}`]);
   });
 
   test("while the model is still answering nothing is saved, fired, or announced under a provisional name", async () => {
@@ -2971,7 +3047,22 @@ describe("AC-N1 the name is settled before the loop is saved and fired", () => {
     expect(s.notices).toEqual([]);
     ws.expireNaming();
     await pending;
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 10:00]"]);
+    expect(s.fires).toEqual([]);
+    expect(ws.loops().map((l) => l.name)).toEqual(["loop-1"]);
+  });
+
+  test("the first grid point is counted from the save: a name settled at 10:05:10 makes a 5m loop first due at 10:10", async () => {
+    ws.clock.now = at(10, 4, 50);
+    const s = modelSession();
+    s.modelAnswer = "until-aborted";
+    const pending = s.command(`5m ${LONG}`);
+    await s.flush();
+    ws.clock.now = at(10, 5, 10);
+    ws.expireNaming();
+    await pending;
+    expect(s.notices).toEqual([{ message: "created loop-1, every 5m, next 2026-09-06 10:10 · naming timed out", type: "info" }]);
+    ws.tick();
+    expect(s.fires).toEqual([]);
   });
 });
 
@@ -2988,7 +3079,7 @@ describe("AC-N2 the first rule that applies names the loop", () => {
     ];
     for (const [token, name] of cases) {
       const made = await create(s, `5m ${token}`);
-      expect([token, made.name, made.notice, made.calls]).toEqual([token, name, `created ${name}, every 5m`, 0]);
+      expect([token, made.name, made.notice, made.calls]).toEqual([token, name, `created ${name}, every 5m, next 2026-09-06 10:05`, 0]);
     }
   });
 
@@ -3003,11 +3094,6 @@ describe("AC-N2 the first rule that applies names the loop", () => {
       const made = await create(s, `5m ${prompt}`);
       expect([prompt, made.name, made.calls]).toEqual([prompt, name, 0]);
     }
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual([
-      "[loop ping #1 2026-09-06 10:00]",
-      "[loop check-build #1 2026-09-06 10:00]",
-      "[loop check-the-build #1 2026-09-06 10:00]",
-    ]);
   });
 
   test("any other text prompt goes to the model: more than 3 words, longer than 16, or not a valid name", async () => {
@@ -3024,8 +3110,7 @@ describe("AC-N2 the first rule that applies names the loop", () => {
     const s = modelSession();
     s.modelAnswer = { text: "named" };
     const made = await create(s, `5m --name nightly ${LONG}`);
-    expect([made.name, made.notice, made.calls]).toEqual(["nightly", "created nightly, every 5m", 0]);
-    expect(s.fires[0]?.text.split("\n")[0]).toBe("[loop nightly #1 2026-09-06 10:00]");
+    expect([made.name, made.notice, made.calls]).toEqual(["nightly", "created nightly, every 5m, next 2026-09-06 10:05", 0]);
   });
 });
 
@@ -3057,7 +3142,7 @@ describe("AC-N3 the naming call", () => {
     const s = modelSession();
     s.modelAnswer = { reasoningTokens: 1024, text: "send-greeting" };
     const made = await create(s, `5m ${LONG}`);
-    expect([made.name, made.notice]).toEqual(["send-greeting", "created send-greeting, every 5m"]);
+    expect([made.name, made.notice]).toEqual(["send-greeting", "created send-greeting, every 5m, next 2026-09-06 10:05"]);
   });
 });
 
@@ -3090,7 +3175,7 @@ describe("AC-N5 no usable name falls back to loop-<k>", () => {
   test("with no current model the name is loop-<k>, the notice is today's, and nothing is called", async () => {
     const s = ws.startSession();
     const made = await create(s, `5m ${LONG}`);
-    expect([made.name, made.notice, made.calls]).toEqual(["loop-1", "created loop-1, every 5m", 0]);
+    expect([made.name, made.notice, made.calls]).toEqual(["loop-1", "created loop-1, every 5m, next 2026-09-06 10:05", 0]);
     expect((await create(s, "5m ping")).name).toBe("loop-2");
     expect((await create(s, "5m @prompt.md")).name).toBe("loop-3");
   });
@@ -3098,7 +3183,7 @@ describe("AC-N5 no usable name falls back to loop-<k>", () => {
   test("an @file name that cleans to nothing gives loop-<k> with today's notice and no call", async () => {
     const s = modelSession();
     const made = await create(s, "5m @+++.md");
-    expect([made.name, made.notice, made.calls]).toEqual(["loop-1", "created loop-1, every 5m", 0]);
+    expect([made.name, made.notice, made.calls]).toEqual(["loop-1", "created loop-1, every 5m, next 2026-09-06 10:05", 0]);
   });
 
   test("a throw, an error or abort stop reason, or an answer that cleans to nothing gives loop-<k> and says why", async () => {
@@ -3114,7 +3199,7 @@ describe("AC-N5 no usable name falls back to loop-<k>", () => {
     for (const [answer, why] of cases) {
       s.modelAnswer = answer;
       const made = await create(s, `5m ${LONG}`);
-      expect([why, made.name, made.notice, made.calls]).toEqual([why, "loop-1", `created loop-1, every 5m · naming ${why}`, 1]);
+      expect([why, made.name, made.notice, made.calls]).toEqual([why, "loop-1", `created loop-1, every 5m, next 2026-09-06 10:05 · naming ${why}`, 1]);
       await s.command("stop loop-1");
     }
     // bun fails the test on an unhandled rejection; let a late one land inside it.
@@ -3127,13 +3212,12 @@ describe("AC-N5 no usable name falls back to loop-<k>", () => {
       s.modelAnswer = answer;
       const pending = s.command(`5m ${LONG}`);
       await s.flush();
-      expect(s.fires).toEqual([]);
+      expect(ws.loops()).toEqual([]);
       ws.expireNaming();
       await pending;
-      expect([answer, s.lastNotice()]).toEqual([answer, "created loop-1, every 5m · naming timed out"]);
-      expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 10:00]"]);
+      expect([answer, s.lastNotice()]).toEqual([answer, "created loop-1, every 5m, next 2026-09-06 10:05 · naming timed out"]);
+      expect(ws.loops().map((l) => l.name)).toEqual(["loop-1"]);
       await s.command("stop loop-1");
-      s.fires.length = 0;
     }
     // bun fails the test on an unhandled rejection; let a late one land inside it.
     await s.flush();
@@ -3149,8 +3233,7 @@ describe("AC-N6 a chosen name already taken gets the lowest free -2, -3", () => 
     expect(ws.loops().map((l) => l.name)).toEqual(["ping", "ping-2", "ping-3"]);
     await s.command("stop ping-2");
     const made = await create(s, "5m ping");
-    expect([made.name, made.notice]).toEqual(["ping-2", "created ping-2, every 5m"]);
-    expect(s.fires.at(-1)?.text.split("\n")[0]).toBe("[loop ping-2 #1 2026-09-06 10:00]");
+    expect([made.name, made.notice]).toEqual(["ping-2", "created ping-2, every 5m, next 2026-09-06 10:05"]);
   });
 
   test("the base is cut so the whole name stays within 16 characters, never ending the base in . _ -", async () => {
@@ -3167,18 +3250,14 @@ describe("AC-N6 a chosen name already taken gets the lowest free -2, -3", () => 
 });
 
 describe("AC-N7 loops.json is read again after the name is settled", () => {
-  test("two creates in flight that the model names alike become x and x-2, both saved and fired once", async () => {
+  test("two creates in flight that the model names alike become x and x-2, both saved", async () => {
     const s = modelSession();
     s.modelAnswer = { text: "x" };
     await Promise.all([s.command(`5m ${LONG}`), s.command(`10m ${LONG}`)]);
-    // The first fire's run has not started when the second create ticks, so the second fire waits for the next tick.
-    await s.flush();
-    ws.tick();
-    expect(ws.loops().map((l) => [l.name, l.intervalMs, l.fires])).toEqual([
-      ["x", 5 * MIN, 1],
-      ["x-2", 10 * MIN, 1],
+    expect(ws.loops().map((l) => [l.name, l.intervalMs, l.dueAt])).toEqual([
+      ["x", 5 * MIN, T0 + 5 * MIN],
+      ["x-2", 10 * MIN, T0 + 10 * MIN],
     ]);
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop x #1 2026-09-06 10:00]", "[loop x-2 #1 2026-09-06 10:00]"]);
   });
 
   test("two creates in flight that both time out become loop-1 and loop-2", async () => {
@@ -3189,11 +3268,9 @@ describe("AC-N7 loops.json is read again after the name is settled", () => {
     await s.flush();
     ws.expireNaming();
     await Promise.all([first, second]);
-    await s.flush();
-    ws.tick();
-    expect(ws.loops().map((l) => [l.name, l.intervalMs, l.fires])).toEqual([
-      ["loop-1", 5 * MIN, 1],
-      ["loop-2", 10 * MIN, 1],
+    expect(ws.loops().map((l) => [l.name, l.intervalMs])).toEqual([
+      ["loop-1", 5 * MIN],
+      ["loop-2", 10 * MIN],
     ]);
     // bun fails the test on an unhandled rejection; let a late one land inside it.
     await s.flush();
@@ -3228,14 +3305,10 @@ describe("AC-N7 loops.json is read again after the name is settled", () => {
     ws.expireNaming();
     await pending;
     expect(ws.loops().map((l) => [l.name, l.fires, l.dueAt])).toEqual([
-      ["ping", 2, T0 + 10 * MIN],
-      ["loop-1", 1, T0 + 10 * MIN],
+      ["ping", 1, T0 + 10 * MIN],
+      ["loop-1", 0, T0 + 10 * MIN],
     ]);
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual([
-      "[loop ping #1 2026-09-06 10:00]",
-      "[loop ping #2 2026-09-06 10:05]",
-      "[loop loop-1 #1 2026-09-06 10:05]",
-    ]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop ping #1 2026-09-06 10:05]"]);
     await s.flush();
   });
 
@@ -3267,7 +3340,7 @@ describe("AC-N8 the same naming in every mode", () => {
         "ping",
         0,
         "stale-reviews",
-        "created stale-reviews, every 5m",
+        "created stale-reviews, every 5m, next 2026-09-06 10:05",
         1,
       ]);
       await s.command("stop ping");
@@ -3288,35 +3361,35 @@ function tickOnly(s: Session): void {
 }
 
 describe("AC-2 the schedule is a fixed grid on the local clock", () => {
-  test("a 1h loop created at 10:07 fires at once and is next due at 11:00; nothing fires at 10:59:59", async () => {
+  test("a 1h loop created at 10:07 fires nothing and is first due at 11:00; nothing fires at 10:59:59", async () => {
     ws.clock.now = at(10, 7);
     const s = ws.startSession();
     await s.command("1h ping");
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     expect(ws.loops()[0]?.dueAt).toBe(at(11, 0));
-    s.settle();
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     expect(ws.loops()[0]?.dueAt).toBe(at(11, 0));
     ws.clock.now = at(10, 59, 59);
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
+    ws.clock.now = at(11, 0);
+    ws.tick();
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 11:00]"]);
   });
 
   test("a late tick fires and the next due is the grid point after it: no drift", async () => {
     ws.clock.now = at(10, 7);
     const s = ws.startSession();
     await s.command("1h ping");
-    s.settle();
-    ws.tick();
     ws.clock.now = at(11, 0, 37);
     ws.tick();
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 10:07]", "[loop loop-1 #2 2026-09-06 11:00]"]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 11:00]"]);
     expect(ws.loops()[0]?.dueAt).toBe(at(12, 0));
     s.settle();
     ws.clock.now = at(12, 0);
     ws.tick();
-    expect(s.fires).toHaveLength(3);
+    expect(s.fires).toHaveLength(2);
     expect(ws.loops()[0]?.dueAt).toBe(at(13, 0));
   });
 
@@ -3324,8 +3397,6 @@ describe("AC-2 the schedule is a fixed grid on the local clock", () => {
     ws.clock.now = at(10, 7);
     const s = ws.startSession();
     await s.command("15m ping");
-    s.settle();
-    ws.tick();
     const dues: number[] = [];
     for (const [h, m] of [[10, 15], [10, 30], [10, 45], [11, 0]] as const) {
       ws.clock.now = at(h, m);
@@ -3333,38 +3404,32 @@ describe("AC-2 the schedule is a fixed grid on the local clock", () => {
       s.settle();
       dues.push(ws.loops()[0]?.dueAt as number);
     }
-    expect(s.fires).toHaveLength(5);
+    expect(s.fires).toHaveLength(4);
     expect(dues).toEqual([at(10, 30), at(10, 45), at(11, 0), at(11, 15)]);
   });
 
   test("a fire deferred by compaction across two grid points goes out late; the next due is the first grid point after the send", async () => {
     const s = ws.startSession();
     await s.command("15m ping");
-    s.settle();
-    ws.tick();
     s.compacting();
     ws.clock.now = at(10, 50);
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     expect(ws.loops()[0]?.dueAt).toBe(at(10, 15));
     s.settle();
-    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 10:00]", "[loop loop-1 #2 2026-09-06 10:50]"]);
+    expect(s.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 10:50]"]);
     expect(ws.loops()[0]?.dueAt).toBe(at(11, 0));
   });
 
   test("an unreadable prompt file advances dueAt to the next grid point and records the error", async () => {
     ws.clock.now = at(10, 7);
     const s = ws.startSession();
-    fs.writeFileSync(ws.file("prompt.md"), "v1");
     await s.command("15m @prompt.md");
-    s.settle();
-    fs.rmSync(ws.file("prompt.md"));
-    ws.tick();
     ws.clock.now = at(10, 15, 20);
     ws.tick();
     const loop = ws.loops()[0];
-    expect(s.fires).toHaveLength(1);
-    expect(loop?.fires).toBe(1);
+    expect(s.fires).toHaveLength(0);
+    expect(loop?.fires).toBe(0);
     expect(loop?.dueAt).toBe(at(10, 30));
     expect(loop?.lastError).toMatch(/ENOENT/);
   });
@@ -3374,7 +3439,6 @@ describe("AC-7 resume and pause on the grid", () => {
   test("resume at 10:41 of a 1h loop stores 11:00 and fires there", async () => {
     const s = ws.startSession();
     await s.command("1h ping");
-    s.settle();
     await s.command("pause loop-1");
     ws.clock.now = at(10, 41);
     await s.command("resume loop-1");
@@ -3382,10 +3446,10 @@ describe("AC-7 resume and pause on the grid", () => {
     expect(s.lastNotice()).toBe("resumed loop-1, next 2026-09-06 11:00");
     ws.clock.now = at(10, 59, 59);
     ws.tick();
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     ws.clock.now = at(11, 0);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
   });
 
   test("pausing leaves the loop untouched but for paused", async () => {
@@ -3411,10 +3475,10 @@ describe("AC-5 no catch-up: taking ownership waits for the next grid point", () 
     ws.tick();
     expect(b.fires).toHaveLength(0);
     expect(ws.loops()[0]?.dueAt).toBe(at(14, 0));
-    expect(ws.loops()[0]?.fires).toBe(1);
+    expect(ws.loops()[0]?.fires).toBe(0);
     ws.clock.now = at(14, 0);
     ws.tick();
-    expect(b.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #2 2026-09-06 14:00]"]);
+    expect(b.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 14:00]"]);
   });
 
   test("a takeover from a crashed owner at 13:20 gives the same result", async () => {
@@ -3432,15 +3496,18 @@ describe("AC-5 no catch-up: taking ownership waits for the next grid point", () 
     expect(b.fires).toHaveLength(1);
   });
 
-  test("a loop with no fire yet still fires at the first tick", async () => {
+  test("a loop that has not fired yet waits for the next grid point too", async () => {
     ws.clock.now = at(10, 7);
     const r = ws.startSession({ mode: "rpc", hasUI: true });
     await r.command("1h x");
     ws.clock.now = at(13, 20);
     const t = ws.startSession();
     ws.tick();
-    expect(t.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 13:20]"]);
-    expect(ws.loops()[0]?.dueAt).toBe(at(14, 0));
+    expect(t.fires).toHaveLength(0);
+    expect(ws.loops()[0]).toMatchObject({ fires: 0, dueAt: at(14, 0) });
+    ws.clock.now = at(14, 0);
+    ws.tick();
+    expect(t.fires.map((f) => f.text.split("\n")[0])).toEqual(["[loop loop-1 #1 2026-09-06 14:00]"]);
   });
 
   test("a stored off-grid future dueAt from the fixed-delay scheme is snapped at acquisition", async () => {
@@ -3522,22 +3589,22 @@ describe("AC-5 no catch-up: taking ownership waits for the next grid point", () 
     expect(b.fires).toHaveLength(1);
   });
 
-  test("a loop created by a non-owner is fired by the owner without being snapped, then follows the grid", async () => {
+  test("a loop created by a non-owner is fired by the owner at its first grid point, then follows the grid", async () => {
     ws.clock.now = at(10, 7);
     const a = ws.startSession();
-    await a.command("1h --name first x");
-    a.settle();
+    await a.command("2h --name first x");
     const b = ws.startSession();
 
     ws.clock.now = at(10, 20);
     await b.command("1h --name second other");
-    expect(b.fires).toHaveLength(0);
-    expect(ws.loops().find((l) => l.name === "second")).toMatchObject({ fires: 0, dueAt: at(10, 20) });
-
+    expect(ws.loops().find((l) => l.name === "second")).toMatchObject({ fires: 0, dueAt: at(11, 0) });
     ws.tick();
-    expect(a.fires).toHaveLength(2);
-    expect(a.fires[1]?.text).toBe("[loop second #1 2026-09-06 10:20]\nother");
-    expect(ws.loops().find((l) => l.name === "second")).toMatchObject({ fires: 1, dueAt: at(11, 0) });
+    expect(a.fires).toHaveLength(0);
+
+    ws.clock.now = at(11, 0);
+    ws.tick();
+    expect(a.fires.map((f) => f.text)).toEqual(["[loop second #1 2026-09-06 11:00]\nother"]);
+    expect(ws.loops().find((l) => l.name === "second")).toMatchObject({ fires: 1, dueAt: at(12, 0) });
     expect(b.fires).toHaveLength(0);
   });
 });
@@ -3550,29 +3617,29 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     ws.clock.now = at(10, 0);
     const s = ws.startSession();
     await s.command("1m ping");
-    expect(s.fires).toHaveLength(1);
+    expect(s.fires).toHaveLength(0);
     s.busy();
 
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
-    expect(s.fires[1]?.options).toEqual({ deliverAs: "followUp" });
-    expect(stored("loop-1")).toMatchObject({ fires: 2, dueAt: at(10, 2) });
+    expect(s.fires).toHaveLength(1);
+    expect(s.fires[0]?.options).toEqual({ deliverAs: "followUp" });
+    expect(stored("loop-1")).toMatchObject({ fires: 1, dueAt: at(10, 2) });
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
 
     for (const minute of [2, 3, 4]) {
       ws.clock.now = at(10, minute);
       ws.tick();
-      expect(s.fires).toHaveLength(2);
-      expect(stored("loop-1")).toMatchObject({ fires: 2, dueAt: at(10, minute + 1) });
+      expect(s.fires).toHaveLength(1);
+      expect(stored("loop-1")).toMatchObject({ fires: 1, dueAt: at(10, minute + 1) });
     }
 
     ws.clock.now = at(10, 5);
     s.settle();
-    expect(s.fires).toHaveLength(3);
-    expect(s.fires[2]?.text).toBe("[loop loop-1 #3 2026-09-06 10:05]\nping");
-    expect(stored("loop-1")).toMatchObject({ fires: 3, dueAt: at(10, 6) });
+    expect(s.fires).toHaveLength(2);
+    expect(s.fires[1]?.text).toBe("[loop loop-1 #2 2026-09-06 10:05]\nping");
+    expect(stored("loop-1")).toMatchObject({ fires: 2, dueAt: at(10, 6) });
   });
 
   test("different loops never skip each other: each queues one fire, both skip the next grid point, a later loop still queues", async () => {
@@ -3580,26 +3647,28 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     const s = ws.startSession();
     await s.command("--name a 1m x");
     await s.command("--name b 1m y");
-    s.fires.length = 0;
     s.busy();
 
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(headers(s)).toEqual(["[loop a #2 2026-09-06 10:01]"]);
+    expect(headers(s)).toEqual(["[loop a #1 2026-09-06 10:01]"]);
     ws.tick();
-    expect(headers(s)).toEqual(["[loop a #2 2026-09-06 10:01]", "[loop b #2 2026-09-06 10:01]"]);
+    expect(headers(s)).toEqual(["[loop a #1 2026-09-06 10:01]", "[loop b #1 2026-09-06 10:01]"]);
 
     ws.clock.now = at(10, 2);
     ws.tick();
     ws.tick();
     expect(s.fires).toHaveLength(2);
-    expect(stored("a")).toMatchObject({ fires: 2, dueAt: at(10, 3) });
-    expect(stored("b")).toMatchObject({ fires: 2, dueAt: at(10, 3) });
+    expect(stored("a")).toMatchObject({ fires: 1, dueAt: at(10, 3) });
+    expect(stored("b")).toMatchObject({ fires: 1, dueAt: at(10, 3) });
 
     await s.command("--name c 1m z");
-    expect(headers(s).at(-1)).toBe("[loop c #1 2026-09-06 10:02]");
-    expect(s.fires).toHaveLength(3);
+    expect(s.fires).toHaveLength(2);
     ws.clock.now = at(10, 3);
+    ws.tick();
+    ws.tick();
+    expect(headers(s).slice(2)).toEqual(["[loop c #1 2026-09-06 10:03]"]);
+    ws.clock.now = at(10, 4);
     ws.tick();
     ws.tick();
     expect(s.fires).toHaveLength(3);
@@ -3610,41 +3679,40 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     const s = ws.startSession();
     await s.command("--name a 1m x");
     await s.command("--name b 1m y");
-    s.fires.length = 0;
     s.busy();
     await s.command("pause b");
 
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(headers(s)).toEqual(["[loop a #2 2026-09-06 10:01]"]);
+    expect(headers(s)).toEqual(["[loop a #1 2026-09-06 10:01]"]);
     ws.clock.now = at(10, 1, 30);
     await s.command("resume b");
     expect(stored("b")?.dueAt).toBe(at(10, 2));
 
     ws.clock.now = at(10, 2);
     ws.tick();
-    expect(headers(s)).toEqual(["[loop a #2 2026-09-06 10:01]", "[loop b #2 2026-09-06 10:02]"]);
-    expect(stored("a")).toMatchObject({ fires: 2, dueAt: at(10, 3) });
-    expect(stored("b")).toMatchObject({ fires: 2, dueAt: at(10, 3) });
+    expect(headers(s)).toEqual(["[loop a #1 2026-09-06 10:01]", "[loop b #1 2026-09-06 10:02]"]);
+    expect(stored("a")).toMatchObject({ fires: 1, dueAt: at(10, 3) });
+    expect(stored("b")).toMatchObject({ fires: 1, dueAt: at(10, 3) });
   });
 
   test("skipped grid points do not count toward --max", async () => {
     ws.clock.now = at(10, 0);
     const s = ws.startSession();
-    await s.command("1m --max 3 ping");
+    await s.command("1m --max 2 ping");
     s.busy();
     for (const minute of [1, 2, 3, 4]) {
       ws.clock.now = at(10, minute);
       ws.tick();
     }
-    expect(s.fires).toHaveLength(2);
-    expect(stored("loop-1")).toMatchObject({ fires: 2, dueAt: at(10, 5) });
+    expect(s.fires).toHaveLength(1);
+    expect(stored("loop-1")).toMatchObject({ fires: 1, dueAt: at(10, 5) });
 
     ws.clock.now = at(10, 5);
     s.settle();
-    expect(s.fires).toHaveLength(3);
+    expect(s.fires).toHaveLength(2);
     expect(ws.loops()).toHaveLength(0);
-    expect(s.lastNotice()).toBe("loop-1 reached max 3, removed");
+    expect(s.lastNotice()).toBe("loop-1 reached max 2, removed");
   });
 
   test("an idle observation clears a mark left by a run that ended without agent_settled", async () => {
@@ -3654,7 +3722,7 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     s.busy();
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
 
     s.idle = true;
     s.running = false;
@@ -3663,8 +3731,8 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     s.busy();
     ws.clock.now = at(10, 2);
     ws.tick();
-    expect(s.fires).toHaveLength(3);
-    expect(s.fires[2]?.options).toEqual({ deliverAs: "followUp" });
+    expect(s.fires).toHaveLength(2);
+    expect(s.fires[1]?.options).toEqual({ deliverAs: "followUp" });
   });
 
   test("after the agent settles, a later run lets the loop queue one fire again", async () => {
@@ -3674,17 +3742,17 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     s.busy();
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
 
     ws.clock.now = at(10, 1, 10);
     s.settle();
     s.busy();
     ws.clock.now = at(10, 2);
     ws.tick();
-    expect(s.fires).toHaveLength(3);
+    expect(s.fires).toHaveLength(2);
     ws.clock.now = at(10, 3);
     ws.tick();
-    expect(s.fires).toHaveLength(3);
+    expect(s.fires).toHaveLength(2);
   });
 
   test("a skip shows nothing: no notification is raised for a skipped grid point", async () => {
@@ -3694,14 +3762,14 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     s.busy();
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
     const before = s.notices.length;
 
     for (const minute of [2, 3, 4]) {
       ws.clock.now = at(10, minute);
       ws.tick();
     }
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
     expect(s.notices).toHaveLength(before);
     expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
   });
@@ -3713,36 +3781,41 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     s.busy();
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
 
     await s.command("stop a");
     await s.command("--name a 1m x");
-    expect(s.fires).toHaveLength(3);
-    expect(s.fires[2]?.text).toBe("[loop a #1 2026-09-06 10:01]\nx");
-    expect(s.fires[2]?.options).toEqual({ deliverAs: "followUp" });
     ws.clock.now = at(10, 2);
     ws.tick();
-    expect(s.fires).toHaveLength(3);
+    expect(s.fires).toHaveLength(2);
+    expect(s.fires[1]?.text).toBe("[loop a #1 2026-09-06 10:02]\nx");
+    expect(s.fires[1]?.options).toEqual({ deliverAs: "followUp" });
+    ws.clock.now = at(10, 3);
+    ws.tick();
+    expect(s.fires).toHaveLength(2);
   });
 
   test("a loop removed by --max or --until leaves no mark for a loop created later under the same name", async () => {
     ws.clock.now = at(10, 0);
     const s = ws.startSession();
-    await s.command("--name m 1m --max 2 x");
+    await s.command("--name m 1m --max 1 x");
     await s.command("--name u 1m --until 10:02 y");
     s.busy();
     ws.clock.now = at(10, 1);
     ws.tick();
     ws.tick();
     expect(ws.loops()).toHaveLength(1);
-    expect(s.fires).toHaveLength(4);
+    expect(s.fires).toHaveLength(2);
     ws.clock.now = at(10, 2);
     ws.tick();
     expect(ws.loops()).toHaveLength(0);
 
     await s.command("--name m 1m x");
     await s.command("--name u 1m y");
-    expect(s.fires).toHaveLength(6);
+    ws.clock.now = at(10, 3);
+    ws.tick();
+    ws.tick();
+    expect(s.fires.map((f) => f.text.split("\n")[0]).slice(2)).toEqual(["[loop m #1 2026-09-06 10:03]", "[loop u #1 2026-09-06 10:03]"]);
   });
 
   test("a skip changes only dueAt in loops.json and never writes lastError", async () => {
@@ -3770,7 +3843,7 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     s.busy();
     ws.clock.now = at(10, 1);
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
 
     // pi compacts only after the run settled, which cleared the mark.
     ws.clock.now = at(10, 1, 10);
@@ -3780,15 +3853,318 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     const before = stored("loop-1");
     ws.tick();
     ws.tick();
-    expect(s.fires).toHaveLength(2);
+    expect(s.fires).toHaveLength(1);
     expect(stored("loop-1")).toEqual(before);
 
     s.settle();
-    expect(s.fires).toHaveLength(3);
+    expect(s.fires).toHaveLength(2);
     s.busy();
     ws.clock.now = at(10, 3);
     ws.tick();
-    expect(s.fires).toHaveLength(4);
-    expect(s.fires[3]?.options).toEqual({ deliverAs: "followUp" });
+    expect(s.fires).toHaveLength(3);
+    expect(s.fires[2]?.options).toEqual({ deliverAs: "followUp" });
+  });
+});
+
+// docs/specs/pi-loop-cron.md: five cron fields at the head of the text are the loop's schedule.
+
+/** 2026-09-07 09:00 local: the Monday after T0, which is a Sunday. */
+const MON_9 = new Date(2026, 8, 7, 9, 0, 0, 0).getTime();
+const header = (f: { text: string }) => f.text.split("\n")[0];
+
+describe("AC-C1 five cron fields at the head of the text are the schedule", () => {
+  test("/loop 0 9 * * 1-5 check the build creates the loop with that expression and that prompt", async () => {
+    const s = ws.startSession();
+    await s.command("0 9 * * 1-5 check the build");
+    expect(ws.loops()).toEqual([
+      { name: "loop-1", cron: "0 9 * * 1-5", prompt: { kind: "text", text: "check the build" }, dueAt: MON_9, fires: 0, paused: false },
+    ]);
+  });
+
+  test("flags at the head or the tail set the name and the bounds; a prompt file works", async () => {
+    const s = ws.startSession();
+    await s.command("--name ci */15 9-17 * * mon-fri check CI --max 20");
+    await s.command("30 9 * * 1-5 --name standup @standup.md");
+    expect(ws.loops().map((l) => [l.name, l.cron, l.prompt, l.max])).toEqual([
+      ["ci", "*/15 9-17 * * mon-fri", { kind: "text", text: "check CI" }, 20],
+      ["standup", "30 9 * * 1-5", { kind: "file", path: "standup.md" }, undefined],
+    ]);
+  });
+
+  test("names count in the month and weekday positions, in any case", async () => {
+    const s = ws.startSession();
+    await s.command("0 12 * JAN,jul Mon hello");
+    expect(ws.loops().map((l) => [l.cron, l.prompt])).toEqual([["0 12 * JAN,jul Mon", { kind: "text", text: "hello" }]]);
+  });
+
+  test("punctuation after the fifth field and an and/then at the prompt's start are dropped", async () => {
+    const s = ws.startSession();
+    const cases: Array<[string, string]> = [
+      ["0 9 * * 1-5: check the build", "check the build"],
+      ["0 9 * * *, then ping", "ping"],
+      ["0 9 * * * and then ping", "ping"],
+      ["0 9 * * 1-5. 3 reviews", "3 reviews"],
+      ["0 9 * * 1-5 : 3 reviews", "3 reviews"],
+    ];
+    for (const [input, prompt] of cases) {
+      await s.command(`--name c ${input}`);
+      expect([input, ws.loops().at(-1)?.prompt]).toEqual([input, { kind: "text", text: prompt }]);
+      await s.command("stop c");
+    }
+  });
+
+  test("a text whose first five tokens are not all cron fields is read by the interval grammar", async () => {
+    const s = ws.startSession();
+    const cases: Array<[string, number, string]> = [
+      ["5m 1 2 3 4 check", 5 * MIN, "1 2 3 4 check"],
+      ["1 2 3 4 check every 5m", 5 * MIN, "1 2 3 4 check"],
+      ["0 9 * * jan check hourly", 60 * MIN, "0 9 * * jan check"],
+    ];
+    for (const [input, ms, prompt] of cases) {
+      await s.command(`--name c ${input}`);
+      expect([input, ws.loops().at(-1)]).toMatchObject([input, { intervalMs: ms, prompt: { kind: "text", text: prompt } }]);
+      expect(ws.loops().at(-1)).not.toHaveProperty("cron");
+      await s.command("stop c");
+    }
+  });
+});
+
+describe("AC-C3 what a cron head rejects", () => {
+  test("each rejects with an error notice and creates nothing", async () => {
+    const s = ws.startSession();
+    const sixth = (token: string) => `cron takes five fields (minute hour day month weekday); "${token}" would be a sixth`;
+    const cases: Array<[string, string]> = [
+      ["0 9 * * 1- x", 'bad cron weekday "1-": not a value 0-7 or sun-sat, *, a range, a list, or a step'],
+      ["0 25 * * * x", 'bad cron hour "25": out of range 0-23'],
+      ["0 17-9 * * * x", 'bad cron hour "17-9": range runs backwards'],
+      ["*/0 * * * * x", 'bad cron minute "*/0": step must be at least 1'],
+      ["5/15 * * * * x", 'bad cron minute "5/15": a step follows * or a range, as in */15'],
+      ["0 0 30 2 * x", 'cron "0 0 30 2 *" never matches'],
+      ["0 0 9 * * 1-5 check the build", sixth("1-5")],
+      ["0 0 9 * * MON-FRI check the build", sixth("MON-FRI")],
+      ["0 9 * * 1-5 2026 check the build", sixth("2026")],
+      ["0 9 * * * * check", sixth("*")],
+      ["0 9 * * * check every 2 hours", 'a cron expression and an interval: "0 9 * * *" and "every 2 hours"; say one'],
+      ["0 9 * * * every 2 hours check", 'a cron expression and an interval: "0 9 * * *" and "every 2 hours"; say one'],
+      ["0 9 * * * check the build hourly", 'a cron expression and an interval: "0 9 * * *" and "hourly"; say one'],
+    ];
+    for (const [input, error] of cases) {
+      s.clearNotices();
+      await s.command(input);
+      expect([input, s.notices]).toEqual([input, [{ message: error, type: "error" }]]);
+    }
+    for (const input of ["0 9 * * 1-5", "0 9 * * 1-5 --max 3", "0 9 * * 1-5:"]) {
+      s.clearNotices();
+      await s.command(input);
+      expect([input, s.notices.map((n) => [n.type, n.message.split(".")[0]])]).toEqual([input, [["error", "missing prompt"]]]);
+    }
+    expect(ws.loops()).toEqual([]);
+    expect(s.fires).toEqual([]);
+  });
+
+  test("an interval word inside the prompt, or a lone dash after the fields, is prompt text", async () => {
+    const s = ws.startSession();
+    await s.command("0 9 * * * daily standup notes");
+    await s.command("0 9 * * * - check the build");
+    expect(ws.loops().map((l) => [l.cron, l.prompt])).toEqual([
+      ["0 9 * * *", { kind: "text", text: "daily standup notes" }],
+      ["0 9 * * *", { kind: "text", text: "- check the build" }],
+    ]);
+  });
+});
+
+describe("AC-C5 a cron loop fires nothing on create and first fires at its first grid point", () => {
+  test("the notice names the first fire; that minute fires #1, and the next due is the next match", async () => {
+    const s = ws.startSession();
+    await s.command("0 9 * * 1-5 check the build");
+    expect(s.notices).toEqual([{ message: "created loop-1, cron 0 9 * * 1-5, next 2026-09-07 09:00", type: "info" }]);
+    expect(s.fires).toEqual([]);
+    ws.clock.now = MON_9 - 1000;
+    ws.tick();
+    expect(s.fires).toEqual([]);
+    ws.clock.now = MON_9;
+    ws.tick();
+    expect(s.fires.map((f) => f.text)).toEqual(["[loop loop-1 #1 2026-09-07 09:00]\ncheck the build"]);
+    expect(ws.loops()[0]?.dueAt).toBe(new Date(2026, 8, 8, 9, 0, 0, 0).getTime());
+  });
+
+  test("the owner and naming notes follow, as for an interval loop", async () => {
+    const a = ws.startSession();
+    await a.command("0 9 * * * x");
+    const b = ws.startSession();
+    b.model = TEST_MODEL;
+    b.modelAnswer = { throws: new Error("provider down") };
+    b.clearNotices();
+    await b.command("30 9 * * * check the open pull requests for stale reviews");
+    expect(b.notices).toEqual([{ message: `created loop-2, cron 30 9 * * *, next 2026-09-07 09:30, owned by pid ${a.pid} · naming failed`, type: "info" }]);
+  });
+});
+
+describe("AC-C6 every grid-point rule holds for a cron loop", () => {
+  test("busy: one waiting fire, the matches after it skipped, and skips not counted toward --max", async () => {
+    const s = ws.startSession();
+    await s.command("* * * * * --max 2 ping");
+    s.busy();
+    for (const minute of [1, 2, 3]) {
+      ws.clock.now = at(10, minute);
+      ws.tick();
+    }
+    expect(s.fires.map(header)).toEqual(["[loop loop-1 #1 2026-09-06 10:01]"]);
+    expect(ws.loops()[0]).toMatchObject({ fires: 1, dueAt: at(10, 4) });
+    ws.clock.now = at(10, 4);
+    s.settle();
+    expect(s.fires.map(header)).toEqual(["[loop loop-1 #1 2026-09-06 10:01]", "[loop loop-1 #2 2026-09-06 10:04]"]);
+    expect(ws.loops()).toEqual([]);
+    expect(s.lastNotice()).toBe("loop-1 reached max 2, removed");
+  });
+
+  test("compaction defers a due fire, which goes out on the first tick after and is followed by the next match", async () => {
+    const s = ws.startSession();
+    await s.command("*/5 * * * * ping");
+    s.compacting();
+    ws.clock.now = at(10, 6);
+    ws.tick();
+    expect(s.fires).toEqual([]);
+    expect(ws.loops()[0]?.dueAt).toBe(at(10, 5));
+    s.settle();
+    expect(s.fires.map(header)).toEqual(["[loop loop-1 #1 2026-09-06 10:06]"]);
+    expect(ws.loops()[0]?.dueAt).toBe(at(10, 10));
+  });
+
+  test("pause keeps the count; resume waits for the next match after the resume moment", async () => {
+    const s = ws.startSession();
+    await s.command("0 * * * * ping");
+    ws.clock.now = at(11, 0);
+    ws.tick();
+    s.settle();
+    await s.command("pause loop-1");
+    ws.clock.now = at(13, 30);
+    ws.tick();
+    await s.command("resume loop-1");
+    expect(s.lastNotice()).toBe("resumed loop-1, next 2026-09-06 14:00");
+    expect(ws.loops()[0]).toMatchObject({ fires: 1, dueAt: at(14, 0) });
+    expect(s.fires).toHaveLength(1);
+  });
+
+  test("--until removes the loop at that time", async () => {
+    const s = ws.startSession();
+    await s.command("*/5 * * * * --until 10:12 ping");
+    for (const minute of [5, 10]) {
+      ws.clock.now = at(10, minute);
+      ws.tick();
+      s.settle();
+    }
+    ws.clock.now = at(10, 12);
+    ws.tick();
+    expect(s.fires.map(header)).toEqual(["[loop loop-1 #1 2026-09-06 10:05]", "[loop loop-1 #2 2026-09-06 10:10]"]);
+    expect(ws.loops()).toEqual([]);
+    expect(s.lastNotice()).toBe("loop-1 reached until 2026-09-06 10:12, removed");
+  });
+
+  test("taking ownership waits for the next match: a point missed while pi was down never fires, fired before or not", async () => {
+    const a = ws.startSession();
+    await a.command("0 * * * * --name hourly ping");
+    await a.command("30 * * * * --name half pong");
+    ws.clock.now = at(10, 30);
+    ws.tick();
+    expect(a.fires.map(header)).toEqual(["[loop half #1 2026-09-06 10:30]"]);
+    a.kill();
+
+    ws.clock.now = at(12, 10);
+    const b = ws.startSession();
+    ws.tick();
+    expect(b.fires).toEqual([]);
+    expect(ws.loops().map((l) => [l.name, l.fires, l.dueAt])).toEqual([
+      ["hourly", 0, at(13, 0)],
+      ["half", 1, at(12, 30)],
+    ]);
+  });
+});
+
+describe("AC-C7 loops.json stores a cron loop by its expression", () => {
+  test("cron in place of intervalMs, the fields joined by one space; a restart resumes it at its next match", async () => {
+    const a = ws.startSession();
+    await a.command("--name ci 0   9  *  * 1-5 check");
+    expect(JSON.parse(fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8"))).toEqual([
+      { name: "ci", cron: "0 9 * * 1-5", prompt: { kind: "text", text: "check" }, dueAt: MON_9, fires: 0, paused: false },
+    ]);
+    a.shutdown();
+    const b = ws.startSession();
+    ws.tick();
+    expect(await listText(b)).toBe("ci  active  next 2026-09-07 09:00  cron 0 9 * * 1-5  fires 0");
+    ws.clock.now = MON_9;
+    ws.tick();
+    expect(b.fires.map((f) => f.text)).toEqual(["[loop ci #1 2026-09-07 09:00]\ncheck"]);
+  });
+
+  test("a stored loop with cron beside intervalMs or interval, or a cron that does not parse, is the unexpected-shape error", async () => {
+    const base = { name: "x", prompt: { kind: "text", text: "y" }, dueAt: T0, fires: 0, paused: false };
+    const bad = [
+      { ...base, cron: "0 9 * * *", intervalMs: 60_000 },
+      { ...base, cron: "0 9 * * *", interval: "5m" },
+      { ...base, cron: "0 25 * * *" },
+      { ...base, cron: 5 },
+    ];
+    fs.mkdirSync(ws.file(".pi-loop"), { recursive: true });
+    for (const loop of bad) {
+      fs.writeFileSync(ws.file(".pi-loop/loops.json"), JSON.stringify([loop]));
+      const s = ws.startSession({ mode: "rpc" });
+      s.clearNotices();
+      await s.command("list");
+      expect([loop, s.notices]).toEqual([loop, [{ message: `${ws.file(".pi-loop/loops.json")}: unexpected shape, fix or delete it`, type: "error" }]]);
+      s.shutdown();
+    }
+  });
+
+  test("every save keeps a record's keys in order: name, the schedule, then the rest", async () => {
+    const s = ws.startSession();
+    await s.command("--name a 5m x");
+    await s.command("--name b */5 * * * * y");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    await s.flush();
+    ws.tick();
+    expect(s.fires).toHaveLength(2);
+    const raw = JSON.parse(fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8")) as object[];
+    expect(raw.map((l) => Object.keys(l))).toEqual([
+      ["name", "intervalMs", "prompt", "dueAt", "fires", "paused"],
+      ["name", "cron", "prompt", "dueAt", "fires", "paused"],
+    ]);
+  });
+});
+
+describe("AC-C8 a cron loop shows as cron <expression>", () => {
+  test("the text listing, the roster row, and the detail panel's cron field", async () => {
+    const s = ws.startSession();
+    await s.command("--name standup 30 9 * * 1-5 summarize");
+    await s.command("--name build 15m check");
+    expect(await listText(s)).toBe(
+      ["standup  active  next 2026-09-07 09:30  cron 30 9 * * 1-5  fires 0", "build  active  next 2026-09-06 10:15  every 15m  fires 0"].join("\n"),
+    );
+    const seen = panel(s, [ESC]);
+    await shortcut(s);
+    expect(s.status()?.split("\n").slice(1)).toEqual([
+      "  › standup     active   next 09:30  cron 30 9 * * 1-5  #0",
+      "    build       active   next 10:15  every 15m          #0",
+    ]);
+    s.press(ENTER);
+    await s.flush();
+    expect(seen).toEqual([
+      [
+        "─".repeat(60),
+        "",
+        " standup",
+        "",
+        " cron       30 9 * * 1-5",
+        " prompt     summarize",
+        " next       2026-09-07 09:30",
+        " fires      0",
+        " status     active",
+        "",
+        " p pause  x stop  escape/ctrl+c back",
+        "",
+        "─".repeat(60),
+      ],
+    ]);
   });
 });

@@ -6,7 +6,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
 import { formatInterval } from "./interval.ts";
-import type { Loop, Panel } from "./types.ts";
+import type { Loop, Panel, Schedule } from "./types.ts";
 
 type Color = Parameters<Theme["fg"]>[0];
 
@@ -60,7 +60,7 @@ export function statusLine(
 
   const parts: string[] = [];
   if (pulse) parts.push(`fired ${pulse.name} #${pulse.fires}`);
-  else if (next !== undefined) parts.push(due ? `due ${next.name}` : `next ${next.name} ${formatLocal(next.dueAt).slice(11)}`);
+  else if (next !== undefined) parts.push(due ? `due ${next.name}` : `next ${next.name} ${formatNext(next.dueAt, now)}`);
   if (errors > 0) parts.push(plural(errors, "error"));
   parts.push(HINT);
   return line(count, parts);
@@ -105,6 +105,9 @@ const NAME_MAX = 16;
 /** The roster's status column is as wide as the longest status, at least this. */
 const STATUS_MIN = 7;
 
+/** The roster's next column is as wide as the longest time, at least this. */
+const NEXT_MIN = 5;
+
 /**
  * The roster: the header, then one row per loop with the selected one marked,
  * at most ROSTER_ROWS of them, the window scrolled to keep the selection in view.
@@ -112,11 +115,13 @@ const STATUS_MIN = 7;
  * and p pause when nothing is selected.
  * Columns are sized over every loop, not the window, so they hold still while scrolling.
  */
-export function rosterLines(loops: Loop[], owner: number | undefined, selected: number): Line[] {
+export function rosterLines(loops: Loop[], owner: number | undefined, selected: number, now: number): Line[] {
   const start = Math.max(0, selected - ROSTER_ROWS + 1);
   const widths = {
     name: Math.min(NAME_MAX, Math.max(NAME_MIN, ...loops.map((l) => l.name.length))),
     status: Math.max(STATUS_MIN, ...loops.map((l) => loopStatus(l, owner).length)),
+    next: Math.max(NEXT_MIN, ...loops.map((l) => rosterNext(l, now).length)),
+    schedule: Math.max(...loops.map((l) => scheduleText(l).length)),
   };
   const toggle = loops[selected]?.paused ? "r resume" : "p pause";
   const header: Line = [
@@ -126,32 +131,41 @@ export function rosterLines(loops: Loop[], owner: number | undefined, selected: 
   ];
   const rows = loops.slice(start, start + ROSTER_ROWS).map((loop, i): Line => {
     const marker: Segment = start + i === selected ? { text: "\u203a", color: "accent" } : { text: " " };
-    return [marker, { text: " " }, ...rosterRow(loop, owner, widths)];
+    return [marker, { text: " " }, ...rosterRow(loop, owner, widths, now)];
   });
   return [header, ...rows];
 }
 
-/** One roster row: name, status, next, interval, fires; only the status word is colored. */
-function rosterRow(loop: Loop, owner: number | undefined, widths: { name: number; status: number }): Line {
-  const next = loop.paused ? "-" : formatLocal(loop.dueAt).slice(11);
+/** One roster row: name, status, next, schedule, fires; only the status word is colored. */
+function rosterRow(loop: Loop, owner: number | undefined, widths: { name: number; status: number; next: number; schedule: number }, now: number): Line {
   const status = loopStatus(loop, owner);
   const color: Color = loop.paused ? "dim" : owner === undefined ? "success" : "muted";
   const name = loop.name.length > NAME_MAX ? `${loop.name.slice(0, NAME_MAX - 1)}\u2026` : loop.name;
-  const rest = [`next ${next.padEnd(5)}`, `every ${formatInterval(loop.intervalMs)}`, `#${loop.fires}`].join("  ");
+  const rest = [`next ${rosterNext(loop, now).padEnd(widths.next)}`, scheduleText(loop).padEnd(widths.schedule), `#${loop.fires}`].join("  ");
   return [{ text: `${name.padEnd(widths.name)}  ` }, { text: status, color }, { text: `${" ".repeat(widths.status - status.length)}  ${rest}` }];
+}
+
+/** A roster row's next time: `-` while paused. */
+function rosterNext(loop: Loop, now: number): string {
+  return loop.paused ? "-" : formatNext(loop.dueAt, now);
 }
 
 function loopStatus(loop: Loop, owner: number | undefined): string {
   return loop.paused ? "paused" : owner === undefined ? "active" : `owned by pid ${owner}`;
 }
 
-/** One /loop list line: name, status, next due, interval, count, bounds, last error. */
+/** A loop's schedule as the roster, the listing, and the create notice show it: `every 5m`, or `cron 0 9 * * 1-5`. */
+export function scheduleText(schedule: Schedule): string {
+  return schedule.cron === undefined ? `every ${formatInterval(schedule.intervalMs)}` : `cron ${schedule.cron.text}`;
+}
+
+/** One /loop list line: name, status, next due, schedule, count, bounds, last error. */
 export function formatLoop(loop: Loop, owner: number | undefined): string {
   const parts = [
     loop.name,
     loopStatus(loop, owner),
     `next ${loop.paused ? "-" : formatLocal(loop.dueAt)}`,
-    `every ${formatInterval(loop.intervalMs)}`,
+    scheduleText(loop),
     `fires ${loop.fires}`,
   ];
   if (loop.max !== undefined) parts.push(`max ${loop.max}`);
@@ -164,6 +178,13 @@ export function formatLocal(at: number): string {
   const d = new Date(at);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+const DAY_MS = 86_400_000;
+
+/** A due time in the status line and the roster: local HH:mm when at most 24 hours away, MM-DD HH:mm when later. */
+function formatNext(at: number, now: number): string {
+  return formatLocal(at).slice(at - now <= DAY_MS ? 11 : 5);
 }
 
 export type PanelAction = "pause" | "resume" | "stop" | "back";
@@ -184,7 +205,7 @@ export function detailPanel(
   const field = (label: string, value: string) => ` ${theme.fg("muted", label.padEnd(10))} ${value}`;
   const hint = (key: string, text: string) => theme.fg("dim", key) + theme.fg("muted", ` ${text}`);
   const body = [
-    field("interval", formatInterval(loop.intervalMs)),
+    loop.cron === undefined ? field("interval", formatInterval(loop.intervalMs)) : field("cron", loop.cron.text),
     field("prompt", loop.prompt.kind === "text" ? loop.prompt.text : `@${loop.prompt.path}`),
     field("next", loop.paused ? "-" : formatLocal(loop.dueAt)),
     field("fires", String(loop.fires)),

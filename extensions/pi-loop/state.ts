@@ -3,8 +3,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parseCron } from "./cron.ts";
 import { intervals, MIN_INTERVAL_MS } from "./interval.ts";
-import { NAME_PATTERN, type Deps, type Loop, type LoopContext, type PromptSource, type Result } from "./types.ts";
+import { NAME_PATTERN, type Deps, type Loop, type LoopContext, type LoopFields, type PromptSource, type Result, type Schedule } from "./types.ts";
 
 const STATE_DIR = ".pi-loop";
 
@@ -52,29 +53,35 @@ export function loadLoops(cwd: string): Result<Loop[]> {
  */
 function normalizeLoop(value: unknown): Loop | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const v = value as Record<string, unknown>;
-  const intervalMs =
-    typeof v.intervalMs === "number"
-      ? v.intervalMs
-      : typeof v.interval === "string"
-        ? intervals(v.interval).find((c) => c.text === v.interval)?.ms
-        : undefined;
-  if (intervalMs === undefined || !Number.isInteger(intervalMs) || intervalMs < MIN_INTERVAL_MS) return undefined;
-  const { interval: _phrase, ...rest } = v;
-  const candidate: unknown = { ...rest, intervalMs };
-  return isLoop(candidate) ? candidate : undefined;
+  const { interval, intervalMs, cron, ...fields } = value as Record<string, unknown>;
+  const schedule = storedSchedule(interval, intervalMs, cron);
+  if (!schedule || !isLoopFields(fields)) return undefined;
+  // The schedule goes right after the name, where a create puts it, so a save keeps each record's key order.
+  const { name, ...rest } = fields;
+  return { name, ...schedule, ...rest };
 }
 
-function isLoop(value: unknown): value is Loop {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
+/** The stored schedule: a cron expression alone, or an intervalMs or the first schema's phrase of at least the minimum. */
+function storedSchedule(phrase: unknown, intervalMs: unknown, cron: unknown): Schedule | undefined {
+  if (cron !== undefined) {
+    if (typeof cron !== "string" || intervalMs !== undefined || phrase !== undefined) return undefined;
+    const parsed = parseCron(cron);
+    return parsed.ok ? { cron: parsed.value } : undefined;
+  }
+  const ms =
+    typeof intervalMs === "number"
+      ? intervalMs
+      : typeof phrase === "string"
+        ? intervals(phrase).find((c) => c.text === phrase)?.ms
+        : undefined;
+  return ms !== undefined && Number.isInteger(ms) && ms >= MIN_INTERVAL_MS ? { intervalMs: ms } : undefined;
+}
+
+function isLoopFields(v: Record<string, unknown>): v is Record<string, unknown> & LoopFields {
   const prompt = v.prompt as Record<string, unknown> | undefined;
   return (
     typeof v.name === "string" &&
     NAME_PATTERN.test(v.name) &&
-    typeof v.intervalMs === "number" &&
-    Number.isInteger(v.intervalMs) &&
-    v.intervalMs >= MIN_INTERVAL_MS &&
     typeof prompt === "object" &&
     prompt !== null &&
     ((prompt.kind === "text" && typeof prompt.text === "string") ||
@@ -89,7 +96,12 @@ function isLoop(value: unknown): value is Loop {
 }
 
 export function saveLoops(cwd: string, loops: Loop[]): void {
-  writeAtomic(loopsFile(cwd), JSON.stringify(loops, null, 2) + "\n");
+  writeAtomic(loopsFile(cwd), JSON.stringify(loops.map(stored), null, 2) + "\n");
+}
+
+/** A loop as loops.json holds it: a cron expression by its text. */
+function stored(loop: Loop): object {
+  return loop.cron === undefined ? loop : { ...loop, cron: loop.cron.text };
 }
 
 function writeAtomic(file: string, content: string): void {
