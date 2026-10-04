@@ -1,0 +1,3 @@
+# pi-loop parses and matches cron expressions itself
+
+pi-loop has its own parser and matcher for the five crontab fields, instead of a library such as croner or cron-parser. The package has no runtime dependencies. The next-due search needs one thing from cron: the first matching minute at or after a wall-clock time. It feeds that into the same walk over real instants that the interval grid uses (ADR 0001). A library's next-run function would apply its own DST handling instead. The accepted grammar is small enough to own: five fields in crontab(5) syntax, with no seconds, years, macros, or Quartz extensions.
