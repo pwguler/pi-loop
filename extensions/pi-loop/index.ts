@@ -1,4 +1,4 @@
-// pi-loop: re-send one prompt on a fixed interval inside the current session.
+// pi-loop: re-send one prompt on a fixed schedule inside the current session.
 //
 // The only text this extension adds to the conversation is the fire itself,
 // sent through pi.sendUserMessage as the trailing user message. Loop state
@@ -7,9 +7,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
 import { defaultName, parseCommand } from "./command.ts";
-import { formatInterval } from "./interval.ts";
 import { chooseName, NAMING_TIMEOUT_MS, namingNote, uniqueName, type Chosen } from "./naming.ts";
-import { nextGridPoint } from "./schedule.ts";
+import { nextDue } from "./schedule.ts";
 import { claimOwner, loadLoops, message, otherOwner, readPrompt, releaseOwner, saveLoops } from "./state.ts";
 import type { Deps, Loop, LoopContext, LoopHost, WidgetTui } from "./types.ts";
 import {
@@ -20,6 +19,7 @@ import {
   lineText,
   rosterLines,
   ROSTER_KEY,
+  scheduleText,
   statusLine,
   statusWidget,
   type Line,
@@ -114,13 +114,13 @@ export function run(pi: LoopHost, deps: Deps): void {
     }
 
     // Taking the loops over: what came due while no session held them is skipped, never caught up.
-    // A loop that has not fired yet still owes its creation fire and is left alone, as is a paused one.
+    // A paused loop is left alone.
     if (session && !session.owning) {
       session.owning = true;
       let changed = false;
       for (const l of loops) {
-        if (l.paused || l.fires === 0) continue;
-        const next = nextGridPoint(l.intervalMs, now);
+        if (l.paused) continue;
+        const next = nextDue(l, now);
         if (l.dueAt !== next) {
           l.dueAt = next;
           changed = true;
@@ -142,7 +142,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       let skipped = false;
       for (const l of loops) {
         if (l.paused || l.dueAt > now || !session.waiting.has(l.name)) continue;
-        l.dueAt = nextGridPoint(l.intervalMs, now);
+        l.dueAt = nextDue(l, now);
         skipped = true;
       }
       if (skipped) saveLoops(ctx.cwd, loops);
@@ -151,7 +151,7 @@ export function run(pi: LoopHost, deps: Deps): void {
     let due: Loop | undefined;
     for (const l of loops) if (!l.paused && l.dueAt <= now && (!due || l.dueAt < due.dueAt)) due = l;
     if (!due) return {};
-    due.dueAt = nextGridPoint(due.intervalMs, now);
+    due.dueAt = nextDue(due, now);
     const prompt = readPrompt(ctx.cwd, due.prompt);
     if (!prompt.ok) {
       due.lastError = prompt.error;
@@ -225,7 +225,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       : live.panelOpen
         ? []
         : live.roster
-          ? rosterLines(live.loops, live.owner, live.roster.index)
+          ? rosterLines(live.loops, live.owner, live.roster.index, deps.now())
           : [live.segments];
     const text = lines?.map(lineText).join("\n");
     if (text === live.status) return;
@@ -405,7 +405,7 @@ export function run(pi: LoopHost, deps: Deps): void {
   });
 
   pi.registerCommand("loop", {
-    description: "Fire a prompt on an interval: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>; /loop (or list) opens the roster; /loop stop | pause | resume <name>",
+    description: "Fire a prompt on a schedule: /loop [--name n] [--max n] [--until t] <prompt with an interval: 5m, every 2 hours, hourly, daily>, or /loop [flags] <cron: 0 9 * * 1-5> <prompt>; /loop (or list) opens the roster; /loop stop | pause | resume <name>",
     handler: async (args, ctx) => {
       await handle(args, ctx);
       render();
@@ -470,7 +470,7 @@ export function run(pi: LoopHost, deps: Deps): void {
         return;
       }
       loop.paused = false;
-      loop.dueAt = nextGridPoint(loop.intervalMs, now);
+      loop.dueAt = nextDue(loop, now);
       saveLoops(ctx.cwd, loops);
       ctx.ui.notify(`resumed ${loop.name}, next ${formatLocal(loop.dueAt)}`, "info");
       return;
@@ -492,11 +492,12 @@ export function run(pi: LoopHost, deps: Deps): void {
         ctx.ui.notify(`loop ${name} already exists; pick another --name or /loop stop ${name}`, "error");
         return;
       }
+      // Nothing fires on create: the first fire is the first grid point after the save, so a grid point the naming wait crossed is not one.
       const loop: Loop = {
         name,
-        intervalMs: cmd.intervalMs,
+        ...cmd.schedule,
         prompt: cmd.prompt,
-        dueAt: now,
+        dueAt: nextDue(cmd.schedule, deps.now()),
         fires: 0,
         paused: false,
         max: cmd.max,
@@ -505,7 +506,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       latest.push(loop);
       saveLoops(ctx.cwd, latest);
       const owner = otherOwner(ctx, deps);
-      ctx.ui.notify(`created ${name}, every ${formatInterval(loop.intervalMs)}${owner === undefined ? "" : `, owned by pid ${owner}`}${chosen ? namingNote(chosen) : ""}`, "info");
+      ctx.ui.notify(`created ${name}, ${scheduleText(loop)}, next ${formatLocal(loop.dueAt)}${owner === undefined ? "" : `, owned by pid ${owner}`}${chosen ? namingNote(chosen) : ""}`, "info");
       tick();
     }
   }

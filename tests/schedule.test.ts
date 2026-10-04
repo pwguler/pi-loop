@@ -1,7 +1,8 @@
-// The grid of docs/specs/pi-loop.md AC-16, on the local wall clock.
+// The grid of docs/specs/pi-loop.md AC-16 and the cron points of docs/specs/pi-loop-cron.md AC-C4, on the local wall clock.
 
 import { describe, expect, test } from "bun:test";
-import { nextGridPoint } from "../extensions/pi-loop/schedule.ts";
+import { parseCron, type Cron } from "../extensions/pi-loop/cron.ts";
+import { nextCronPoint, nextGridPoint } from "../extensions/pi-loop/schedule.ts";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -255,6 +256,139 @@ describe("nextGridPoint across real DST rules", () => {
             if (got !== want) {
               throw new Error(`${zone} ${interval / MIN}m after ${new Date(after).toISOString()}: got ${new Date(got).toISOString()}, want ${new Date(want).toISOString()}`);
             }
+          }
+        }
+      }
+    });
+  }
+});
+
+function cron(text: string): Cron {
+  const parsed = parseCron(text);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.value;
+}
+
+/** Whether a wall-clock minute matches: each field read off the clock, the day rule applied. */
+function matchesWall(c: Cron, wall: number): boolean {
+  const d = new Date(wall);
+  const day = c.days.has(d.getUTCDate());
+  const weekday = c.weekdays.has(d.getUTCDay());
+  return (
+    c.minutes.has(d.getUTCMinutes()) &&
+    c.hours.has(d.getUTCHours()) &&
+    c.months.has(d.getUTCMonth() + 1) &&
+    (c.eitherDay ? day || weekday : day && weekday)
+  );
+}
+
+/** The next cron point found by testing every whole minute after `after`: slow, and right by construction. */
+function walkCron(c: Cron, after: number, offset: (t: number) => number): number {
+  for (let t = (Math.floor(after / MIN) + 1) * MIN; ; t += MIN) {
+    if (matchesWall(c, t - offset(t) * MIN)) return t;
+  }
+}
+
+const iso = (t: number) => new Date(t).toISOString();
+
+describe("AC-C4 cron points on the local clock", () => {
+  // With no offset the local clock reads UTC, so instants are written as UTC.
+  const at = (text: string, after: string) => iso(nextCronPoint(cron(text), utc(after), fixed(0)));
+
+  test("the next matching minute strictly after: every minute, quarter hours, a weekday morning", () => {
+    expect(at("* * * * *", "2026-10-02T10:07:23Z")).toBe("2026-10-02T10:08:00.000Z");
+    expect(at("*/15 * * * *", "2026-10-02T10:07:23Z")).toBe("2026-10-02T10:15:00.000Z");
+    expect(at("*/15 * * * *", "2026-10-02T10:15:00Z")).toBe("2026-10-02T10:30:00.000Z");
+    // 2026-10-02 is a Friday: the next weekday 09:00 is Monday.
+    expect(at("0 9 * * 1-5", "2026-10-02T10:00:00Z")).toBe("2026-10-05T09:00:00.000Z");
+    expect(at("0 9 * * 1-5", "2026-10-05T08:59:59Z")).toBe("2026-10-05T09:00:00.000Z");
+    expect(at("0 0 * * 7", "2026-10-03T12:00:00Z")).toBe("2026-10-04T00:00:00.000Z");
+  });
+
+  test("both day fields restricted: a day matching either counts; one starting with * makes a day match both", () => {
+    // 30 4 1,15 * 5: the 1st, the 15th, and every Friday. 2026-10-02 and -09 are Fridays, -15 a Thursday.
+    expect(at("30 4 1,15 * 5", "2026-10-01T05:00:00Z")).toBe("2026-10-02T04:30:00.000Z");
+    expect(at("30 4 1,15 * 5", "2026-10-02T05:00:00Z")).toBe("2026-10-09T04:30:00.000Z");
+    expect(at("30 4 1,15 * 5", "2026-10-10T00:00:00Z")).toBe("2026-10-15T04:30:00.000Z");
+    // 0 9 */2 * 1: odd-numbered days that are Mondays. October 2026's Mondays are the 5th, 12th, 19th, 26th.
+    expect(at("0 9 */2 * 1", "2026-10-01T00:00:00Z")).toBe("2026-10-05T09:00:00.000Z");
+    expect(at("0 9 */2 * 1", "2026-10-05T10:00:00Z")).toBe("2026-10-19T09:00:00.000Z");
+  });
+
+  test("months, the year's end, and a leap day years away", () => {
+    // January 2027 starts on a Friday; its first Monday is the 4th.
+    expect(at("0 12 * jan,jul mon", "2026-10-04T00:00:00Z")).toBe("2027-01-04T12:00:00.000Z");
+    expect(at("0 0 1 1 *", "2026-06-01T00:00:00Z")).toBe("2027-01-01T00:00:00.000Z");
+    expect(at("59 23 31 12 *", "2026-12-31T23:59:00Z")).toBe("2027-12-31T23:59:00.000Z");
+    expect(at("0 0 29 2 *", "2026-03-01T00:00:00Z")).toBe("2028-02-29T00:00:00.000Z");
+    // 2100 is no leap year, so its next leap day is in 2104.
+    expect(at("0 0 29 2 *", "2096-03-01T00:00:00Z")).toBe("2104-02-29T00:00:00.000Z");
+  });
+
+  test("results are whole minutes and feeding each result back strictly increases", () => {
+    for (const text of ["* * * * *", "*/7 * * * *", "0 9 * * 1-5", "30 4 1,15 * 5", "0 0 29 2 *", "15 2 * * *"]) {
+      let t = utc("2026-09-06T10:07:23.456Z");
+      for (let i = 0; i < 12; i++) {
+        const next = nextCronPoint(cron(text), t, fixed(0));
+        expect(next).toBeGreaterThan(t);
+        expect(next % MIN).toBe(0);
+        t = next;
+      }
+    }
+  });
+
+  test("a leap day years away is found on the real local clock", () => {
+    const next = nextCronPoint(cron("0 0 29 2 *"), local(2026, 3, 1, 0, 0));
+    const d = new Date(next);
+    expect([d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes()]).toEqual([2028, 2, 29, 0, 0]);
+  });
+});
+
+describe("AC-C4 cron points across real DST rules", () => {
+  const newYork = zoneOffset("America/New_York");
+  const lordHowe = zoneOffset("Australia/Lord_Howe");
+  const at = (text: string, after: string, offset: (t: number) => number) => iso(nextCronPoint(cron(text), utc(after), offset));
+
+  test("a matching minute inside a skipped hour does not occur: 30 2 * * * skips New York's spring-forward day", () => {
+    // 2026-03-08 02:00 EST becomes 03:00 EDT, so 02:30 does not exist that day.
+    expect(at("30 2 * * *", "2026-03-07T08:00:00Z", newYork)).toBe("2026-03-09T06:30:00.000Z");
+    // */30 at 01:45 EST: 02:00 and 02:30 do not exist; the next is 03:00 EDT.
+    expect(at("*/30 * * * *", "2026-03-08T06:45:00Z", newYork)).toBe("2026-03-08T07:00:00.000Z");
+  });
+
+  test("a 30-minute skipped stretch: 15 2 * * * skips Lord Howe's 2026-10-04", () => {
+    // 01:59 LHST is followed by 02:30 LHDT.
+    expect(at("15 2 * * *", "2026-10-03T15:00:00Z", lordHowe)).toBe("2026-10-04T15:15:00.000Z");
+  });
+
+  test("a matching minute inside a repeated hour occurs in both passes: 30 1 * * * on New York's fall-back day", () => {
+    // 01:30 EDT is 05:30Z, 01:30 EST is 06:30Z.
+    expect(at("30 1 * * *", "2026-11-01T05:00:00Z", newYork)).toBe("2026-11-01T05:30:00.000Z");
+    expect(at("30 1 * * *", "2026-11-01T05:30:00Z", newYork)).toBe("2026-11-01T06:30:00.000Z");
+    expect(at("30 1 * * *", "2026-11-01T06:30:00Z", newYork)).toBe("2026-11-02T06:30:00.000Z");
+  });
+
+  // Every whole-minute instant is tested by `walkCron`, so agreement over sweeps of each zone's
+  // transitions shows the search is exact there, not only on the cases above.
+  const zones: Array<[string, Array<[string, string]>]> = [
+    ["America/New_York", [["2026-03-07", "2026-03-10"], ["2026-10-31", "2026-11-03"]]],
+    ["Europe/London", [["2026-03-28", "2026-03-31"], ["2026-10-24", "2026-10-27"]]],
+    ["Australia/Lord_Howe", [["2026-04-03", "2026-04-06"], ["2026-10-02", "2026-10-05"]]],
+    ["Asia/Kathmandu", [["2026-03-07", "2026-03-10"]]],
+    ["Asia/Jakarta", [["2026-03-07", "2026-03-10"]]],
+  ];
+  const expressions = ["* * * * *", "*/7 * * * *", "30 * * * *", "0 2 * * *", "30 1 * * *", "15 2 * * *", "0 */3 * * *", "45 0-3 * * *", "0 9 * * 1-5", "30 4 1,15 * 0"];
+
+  for (const [zone, windows] of zones) {
+    test(`${zone}: agrees with the minute-by-minute walk around its transitions, for every expression`, () => {
+      const offset = zoneOffset(zone);
+      for (const [from, to] of windows) {
+        for (const text of expressions) {
+          const c = cron(text);
+          for (let after = utc(`${from}T00:00:00Z`); after < utc(`${to}T00:00:00Z`); after += 97 * MIN + 13_000) {
+            const got = nextCronPoint(c, after, offset);
+            const want = walkCron(c, after, offset);
+            if (got !== want) throw new Error(`${zone} "${text}" after ${iso(after)}: got ${iso(got)}, want ${iso(want)}`);
           }
         }
       }

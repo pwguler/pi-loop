@@ -36,12 +36,13 @@ pi install ./pi-loop
 /loop                             the roster: one row per loop
 /loop list                        the same roster
 /loop [flags] <text with an interval phrase> [flags]
+/loop [flags] <cron expression> <prompt> [flags]
 /loop stop <name>
 /loop pause <name>
 /loop resume <name>
 ```
 
-In the TUI, both forms open the roster, and so does alt+l while the prompt editor has focus, with or without text in it. The status line expands in place into a header and one row per loop (name, status, next, interval, fires); at most 8 rows show, and the window scrolls with the selection. The header names the keys for the selected loop:
+In the TUI, both forms open the roster, and so does alt+l while the prompt editor has focus, with or without text in it. The status line expands in place into a header and one row per loop (name, status, next, schedule, fires); at most 8 rows show, and the window scrolls with the selection. The header names the keys for the selected loop:
 
 ```
 loops · ↑↓/jk select · p pause · x stop · enter open · esc back
@@ -52,7 +53,7 @@ loops · ↑↓/jk select · r resume · x stop · enter open · esc back
 
 alt+l arrives as Esc followed by l, so it works without the kitty keyboard protocol. pi joins the two into alt+l when they arrive within 10 ms, or 100 ms over SSH; for a slower multiplexer or link, set `PI_TUI_ESC_TIMEOUT` to a larger number of milliseconds. On macOS the Option key has to send Meta (Esc+), for example with iTerm2's "Esc+" setting, Terminal.app's "Use Option as Meta key", or Ghostty's `macos-option-as-alt`. In a terminal without the kitty keyboard protocol, repeats arrive as presses, so holding alt+l toggles the roster. `/loop` opens the roster in any terminal. If another extension also registers alt+l, pi keeps the one loaded last and prints a warning.
 
-The detail panel (interval, prompt, next, fires, status, bounds, last error) is drawn like pi's own dialogs, with single keys along the bottom. The first key follows the loop's state:
+The detail panel (interval or cron expression, prompt, next, fires, status, bounds, last error) is drawn like pi's own dialogs, with single keys along the bottom. The first key follows the loop's state:
 
 ```
 p pause  x stop  escape/ctrl+c back
@@ -61,7 +62,7 @@ r resume  x stop  escape/ctrl+c back
 
 p pauses an active loop and r resumes a paused one. The key that does not apply does nothing, in the panel and in the roster. `x` asks first, in the panel and in the roster. Stopping the last loop closes the roster and removes the status line. Each key runs the typed command, so the state file, the notice, and the status line update the same way, and the roster shows the change. Outside the TUI (print, json, RPC), both forms print one text line per loop instead.
 
-The interval phrase is cut out of the text; what remains is the prompt.
+The interval phrase or cron expression is cut out of the text; what remains is the prompt.
 
 ```
 /loop 5m check the build
@@ -70,14 +71,18 @@ The interval phrase is cut out of the text; what remains is the prompt.
 /loop check the build, every 2 hours, and report
 /loop run the smoke test every 1h30m --name smoke --max 6
 /loop every 50 min @prompt.md
+/loop 0 9 * * 1-5 summarize the overnight CI failures
+/loop */15 9-17 * * mon-fri check the build --max 20
 ```
 
 - Interval forms: `5m`, `5 min`, `2 hours`, `1d`, `hourly`, `daily`, `every hour`, `each day`, `1h30m`, `1 hour 30 minutes`. Minimum `1m`.
 - At the head of the text any form counts. At the tail only an `every`/`each` phrase, a compact form (`5m`, `2h`, `1d`, `1h30m`), `hourly`, or `daily` counts, so `summarize the day` has no interval and `5m check the last 3 days` keeps its duration in the prompt. In the middle only an `every`/`each` phrase counts, so `wait 5 minutes then retry` is prompt text, not an interval. Two phrases reject (`5m check again in 10m`); say one. An `and`/`then` a head phrase leaves at the start of the prompt is dropped: `1m and then ping` sends `ping`.
 - Flags: `--name <n>`, `--max <n>`, `--until <ISO|HH:mm>`. Head or tail, never inside the prompt. Tail flags are read before the interval, so `--name daily` is a name, not an interval.
-- The loop fires once on create, then on its schedule: a fixed grid on the local wall clock, whatever time earlier fires went out. `1h` fires at every HH:00, `15m` at :00, :15, :30, :45, `daily` at 00:00, `90m` at 00:00, 01:30, 03:00. An interval that does not divide 24 hours, such as `7m`, keeps its spacing across midnight. On a DST day the grid stays on the local clock: a point inside a repeated hour occurs in both passes, a point inside a skipped hour does not occur. A loop that comes due while the agent is busy is sent at once and queued behind the running turn as a follow-up. A loop keeps at most one fire waiting: from a send made while the agent is busy until the agent settles, the loop's further grid points are skipped. A skip sends nothing, does not count toward `--max`, and moves the loop's next due time to the next grid point. Fires of different loops never skip each other. A `1m` loop whose turns take 5 minutes runs one fire per turn and skips the grid points in between. One loop fires per tick, earliest due first, so loops due together go out one second apart. While pi compacts or summarizes, a due fire is held back and goes out on the first tick after.
+- A cron expression is crontab's five fields: minute (0-59), hour (0-23), day of month (1-31), month (1-12 or `jan`-`dec`), and day of week (0-7 or `sun`-`sat`, where 0 and 7 are both Sunday). A field is `*`, a value, a range (`1-5`), a list (`1,15`), or a step on `*` or a range (`*/15`, `0-30/10`). In the month and weekday fields, names work wherever a number does, in upper or lower case, and `fri-sun` runs Friday to Sunday. When neither day field starts with `*`, a day that matches either one counts, as in cron: `30 4 1,15 * 5` fires on the 1st, the 15th, and every Friday. Otherwise a day must match both, so `0 9 */2 * 1` fires on Mondays that fall on an odd-numbered day.
+- A cron expression counts only at the head of the text, after any head flags. A sixth field-like token right after it rejects instead of starting the prompt, which catches the seconds-first and year forms, such as `0 0 9 * * 1-5`. A `,` `;` `:` `.` or `!` after the fifth field ends the expression and is dropped, and so is an `and`/`then` after it: `0 9 * * 1-5: 3 reviews` sends `3 reviews`. Behind a cron expression the interval rules for the middle and the tail still apply, and a phrase that counts there rejects with the cron expression; say one. So `0 9 * * 1-5 check the build hourly` rejects, and `0 9 * * 1-5 daily standup notes` sends `daily standup notes`. There are no `@daily`-style macros, since `@` starts a file prompt; `hourly` and `daily` are interval phrases.
+- Nothing fires on create. The loop first fires at its first grid point, then at every grid point after it: a fixed grid on the local wall clock, whatever time earlier fires went out. `1h` fires at every HH:00, `15m` at :00, :15, :30, :45, `daily` at 00:00, `90m` at 00:00, 01:30, 03:00. An interval that does not divide 24 hours, such as `7m`, keeps its spacing across midnight. A cron loop's grid points are the local minutes its expression matches. On a DST day the grid stays on the local clock: a point inside a repeated hour occurs in both passes, a point inside a skipped hour does not occur. A loop that comes due while the agent is busy is sent at once and queued behind the running turn as a follow-up. A loop keeps at most one fire waiting: from a send made while the agent is busy until the agent settles, the loop's further grid points are skipped. A skip sends nothing, does not count toward `--max`, and moves the loop's next due time to the next grid point. Fires of different loops never skip each other. A `1m` loop whose turns take 5 minutes runs one fire per turn and skips the grid points in between. One loop fires per tick, earliest due first, so loops due together go out one second apart. While pi compacts or summarizes, a due fire is held back and goes out on the first tick after.
 - A prompt that is one `@path` token reads the file at every fire, relative to the cwd. A missing or empty file skips that fire and shows the error in the loop's detail panel and the text listing; the loop stays alive. A prompt that goes on past the `@` word is text: `@alice please review` is sent as written.
-- Without `--name`, in a session with a model, the loop is named before it is created and first fires. The first rule that applies names it. An `@path` prompt takes the file's name (`@prompt.md` → `prompt`). A prompt of up to 3 words that already makes a name of at most 16 characters is used as it is (`ping` → `ping`, `check build` → `check-build`). Otherwise the session's model picks a 1–3 word hyphenated name of at most 16 characters, in one side request that adds nothing to the conversation and is given up after 20 seconds. A taken name gets `-2`, `-3`.
+- Without `--name`, in a session with a model, the loop is named before it is created. The first rule that applies names it. An `@path` prompt takes the file's name (`@prompt.md` → `prompt`). A prompt of up to 3 words that already makes a name of at most 16 characters is used as it is (`ping` → `ping`, `check build` → `check-build`). Otherwise the session's model picks a 1–3 word hyphenated name of at most 16 characters, in one side request that adds nothing to the conversation and is given up after 20 seconds. A taken name gets `-2`, `-3`.
 - With no model, a failed or timed-out call, no usable answer, or a file name that leaves nothing, the name is `loop-<k>` with the lowest free `k`. When the model was tried and failed, the create notice says why: `· naming timed out`, `· naming failed`, `· naming gave no usable name`.
 - `--max n` removes the loop after its n-th fire. `--until` removes it at that time; `HH:mm` means the next such local time.
 - Pause keeps the counter. Resume waits for the next grid point after the resume moment.
@@ -96,6 +101,7 @@ While loops exist, and for 5s after the last loop's final fire, one line shows b
 
 ```
   1 active loop · next daily-greeting 00:00 · alt+l to manage      steady: counts and the earliest due active loop
+  1 active loop · next standup 09-14 09:00 · alt+l to manage       due more than 24 hours from now: MM-DD before the time
   2 active loops, 1 paused · due fast · alt+l to manage            fast is due but cannot be sent yet, for example during a compaction
   2 active loops · fired fast #6 · alt+l to manage                 for 5s after a fire, then back to next
   2 paused loops · alt+l to manage                                 everything paused
@@ -119,18 +125,18 @@ That is the stored text and what the model sees. On screen the whole message is 
 ## State
 
 ```
-<cwd>/.pi-loop/loops.json   every loop: name, intervalMs, prompt source, dueAt, fires, paused, bounds, last error
+<cwd>/.pi-loop/loops.json   every loop: name, intervalMs or cron, prompt source, dueAt, fires, paused, bounds, last error
 <cwd>/.pi-loop/owner.json   {pid, sessionId, claimedAt}: the one session in this cwd that fires
 ```
 
-Only the owner fires. A second pi session in the same cwd lists the loops as `owned by pid <n>` and fires nothing. When the owner pid is dead, the next session takes over. Owner shutdown removes `owner.json`. A restart in the same cwd resumes every non-stopped loop. Grid points that passed while pi was down do not fire: when a session takes ownership, every active loop that has fired before waits for its next grid point. A loop that has not fired yet still fires at the first tick that can send.
+Only the owner fires. A second pi session in the same cwd lists the loops as `owned by pid <n>` and fires nothing. When the owner pid is dead, the next session takes over. Owner shutdown removes `owner.json`. A restart in the same cwd resumes every non-stopped loop. Grid points that passed while pi was down do not fire: when a session takes ownership, every active loop waits for its next grid point.
 
 Loop state is never read from the conversation. Compaction, `/tree`, and forks do not change a counter or a due time. Only TUI sessions claim ownership and fire. Print, json, and RPC sessions never do, a pi-subagents child running as RPC included; their `/loop` commands still write the state file, and the TUI owner fires those loops.
 
 ## Verification
 
 ```bash
-bun test          # behavior against a mock pi host: firing, persistence, ownership, bounds, status line, roster
+bun test          # behavior against a mock pi host: firing, persistence, ownership, bounds, status line, roster; the grid and the cron grammar
 bun run typecheck # tsc; also proves pi's ExtensionAPI satisfies the host surface used, every event pi-loop subscribes to included (tests/host-contract.ts)
 grep -rnE 'cache_control|"ttl"|\bttl\s*[:=]|pi\.on\("context"|systemPrompt' extensions ; test $? -eq 1
 grep -rn 'sendUserMessage\|sendMessage' extensions | grep -v sendUserMessage ; test $? -eq 1

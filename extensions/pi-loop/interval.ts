@@ -65,19 +65,25 @@ export function intervals(text: string): IntervalCandidate[] {
 const TAIL_FORM = /^(?:(?:\d+[mhd])+|hourly|daily)$/i;
 
 /**
- * Pick the one interval phrase in the text and cut it out. At the head any
- * form counts; at the tail only every/each, a compact form, hourly, or daily;
- * in the middle only every/each, so a duration inside the instruction is never
- * eaten. Two phrases reject.
+ * The interval phrases that count where they sit in the trimmed text: any
+ * form at the head, at the tail only every/each, a compact form, hourly, or
+ * daily, in the middle only every/each, so a duration inside the instruction
+ * is never eaten. Positions are in the trimmed text.
  */
-export function parseIntervalPhrase(input: string): Result<{ ms: number; rest: string }> {
+export function countedIntervals(input: string): IntervalCandidate[] {
   const text = input.trim();
   const tailEnd = text.replace(/[\s.,;:!]+$/, "").length;
-  const candidates = intervals(text).filter(
-    (c) => c.prefixed || c.start === 0 || (c.end === tailEnd && TAIL_FORM.test(c.text)),
-  );
-  const [one, two] = candidates;
-  if (!one) return { ok: false, error: "no interval found: say 5m, every 2 hours, hourly, or daily" };
+  return intervals(text).filter((c) => c.prefixed || c.start === 0 || (c.end === tailEnd && TAIL_FORM.test(c.text)));
+}
+
+/**
+ * Pick the one interval phrase that counts in the text and cut it out; two
+ * reject. Undefined when no phrase counts.
+ */
+export function parseIntervalPhrase(input: string): Result<{ ms: number; rest: string }> | undefined {
+  const text = input.trim();
+  const [one, two] = countedIntervals(text);
+  if (!one) return undefined;
   if (two) return { ok: false, error: `more than one interval: "${one.text}" and "${two.text}"; say one` };
   if (one.ms < MIN_INTERVAL_MS) return { ok: false, error: `interval "${one.text}" is below the minimum 1m` };
   return { ok: true, value: { ms: one.ms, rest: stripJoin(text.slice(0, one.start), text.slice(one.end)) } };
@@ -89,7 +95,7 @@ export function parseIntervalPhrase(input: string): Result<{ ms: number; rest: s
  * it still joins what follows to what came before, unless the phrase was at
  * the head and nothing came before.
  */
-function stripJoin(before: string, after: string): string {
+export function stripJoin(before: string, after: string): string {
   const pre = before.replace(/[\s,;:.!]+$/, "").replace(/\s+(?:and|then)$/i, "");
   const post = after.replace(/^[\s,;:.!]+/, "");
   if (pre === "") return post.replace(/^(?:(?:and|then)(?:\s+|$))+/i, "");

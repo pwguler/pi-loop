@@ -5,6 +5,7 @@
 import type { Api, AssistantMessage, Context, Model, ModelsApiStreamOptions } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
+import type { Cron } from "./cron.ts";
 
 export interface Panel {
   render(width: number): string[];
@@ -97,9 +98,12 @@ export interface Deps {
 
 export type PromptSource = { kind: "text"; text: string } | { kind: "file"; path: string };
 
-export interface Loop {
+/** When a loop fires: on the grid of its interval, or on the minutes its cron expression matches. */
+export type Schedule = { intervalMs: number; cron?: undefined } | { cron: Cron; intervalMs?: undefined };
+
+/** A loop's record apart from its schedule. */
+export interface LoopFields {
   name: string;
-  intervalMs: number;
   prompt: PromptSource;
   /** Instant at which the next fire may happen. */
   dueAt: number;
@@ -112,6 +116,8 @@ export interface Loop {
   until?: number;
   lastError?: string;
 }
+
+export type Loop = Schedule & LoopFields;
 
 /** Loop names: letters, digits, . _ - only. */
 export const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
