@@ -957,8 +957,6 @@ describe("AC-12 loop state is never read from conversation history", () => {
 
 // docs/specs/pi-loop-status.md
 
-const HINT = " · alt+l to manage";
-
 describe("AC-S1 the owner line reads counts and the next fire", () => {
   test("<a> active loop(s)[, <p> paused] · next <earliest active> <HH:mm>; all paused drops next", async () => {
     const s = ws.startSession();
@@ -966,59 +964,59 @@ describe("AC-S1 the owner line reads counts and the next fire", () => {
     await s.command("5m --name fast b");
     await s.command("1m --name idle c");
     await s.command("pause idle");
-    expect(s.status()).toBe(`  2 active loops, 1 paused · next fast 10:05${HINT}`);
+    expect(s.status()).toBe(`  2 active loops, 1 paused · next fast 10:05`);
 
     await s.command("resume idle");
     ws.tick();
-    expect(s.status()).toBe(`  3 active loops · next idle 10:01${HINT}`);
+    expect(s.status()).toBe(`  3 active loops · next idle 10:01`);
 
     await s.command("stop idle");
     await s.command("stop slow");
-    expect(s.status()).toBe(`  1 active loop · next fast 10:05${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next fast 10:05`);
 
     await s.command("2h --name slow a");
     await s.command("pause fast");
     await s.command("pause slow");
-    expect(s.status()).toBe(`  2 paused loops${HINT}`);
+    expect(s.status()).toBe(`  2 paused loops`);
     await s.command("stop slow");
-    expect(s.status()).toBe(`  1 paused loop${HINT}`);
+    expect(s.status()).toBe(`  1 paused loop`);
   });
 
   test("the next time reads HH:mm when at most 24 hours away and MM-DD HH:mm when later", async () => {
     const s = ws.startSession();
     await s.command("--name tue 0 9 * * 2 x");
-    expect(s.status()).toBe(`  1 active loop · next tue 09-08 09:00${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next tue 09-08 09:00`);
     await s.command("--name mon 0 10 * * 1 y");
-    expect(s.status()).toBe(`  2 active loops · next mon 10:00${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · next mon 10:00`);
     await s.command("stop mon");
     ws.clock.now = new Date(2026, 8, 7, 8, 59, 59, 999).getTime();
     ws.tick();
-    expect(s.status()).toBe(`  1 active loop · next tue 09-08 09:00${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next tue 09-08 09:00`);
     ws.clock.now = new Date(2026, 8, 7, 9, 0, 0, 0).getTime();
     ws.tick();
-    expect(s.status()).toBe(`  1 active loop · next tue 09:00${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next tue 09:00`);
   });
 });
 
 describe("AC-S2 a fire pulses for five seconds", () => {
-  test("fired <name> #<fires> replaces next, counts and hint stay, then next returns", async () => {
+  test("fired <name> #<fires> replaces next, the counts stay, then next returns", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     await s.command("5m --name fast b");
-    expect(s.status()).toBe(`  2 active loops · next fast 10:05${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · next fast 10:05`);
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · fired fast #1${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · fired fast #1`);
     ws.clock.advance(4999);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · fired fast #1${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · fired fast #1`);
     ws.clock.advance(1);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · next fast 10:10${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · next fast 10:10`);
 
     ws.clock.advance(5 * MIN - 5000);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · fired fast #2${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · fired fast #2`);
   });
 
   test("a second fire inside the five seconds replaces the pulse", async () => {
@@ -1027,17 +1025,17 @@ describe("AC-S2 a fire pulses for five seconds", () => {
     await s.command("5m --name b y");
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · fired a #1${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · fired a #1`);
     await s.flush();
     ws.clock.advance(1000);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · fired b #1${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · fired b #1`);
     ws.clock.advance(4000);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · fired b #1${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · fired b #1`);
     ws.clock.advance(1000);
     ws.tick();
-    expect(s.status()).toBe(`  2 active loops · next a 10:10${HINT}`);
+    expect(s.status()).toBe(`  2 active loops · next a 10:10`);
   });
 });
 
@@ -1045,22 +1043,22 @@ describe("AC-S3 due while the fire is deferred", () => {
   test("an overdue active loop whose fire compaction defers reads due <name> with no time, then fires after settle", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
-    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05`);
     s.settle();
     s.compacting();
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()).toBe(`  1 active loop · due loop-1${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · due loop-1`);
     ws.clock.advance(60_000);
     ws.tick();
-    expect(s.status()).toBe(`  1 active loop · due loop-1${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · due loop-1`);
     s.settle();
-    expect(s.status()).toBe(`  1 active loop · fired loop-1 #1${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · fired loop-1 #1`);
   });
 });
 
 describe("AC-S4 a non-owner line", () => {
-  test("reads <n> loop(s) · owned by pid <pid> · hint, never says active, carries no error suffix", async () => {
+  test("reads <n> loop(s) · owned by pid <pid>, never says active, carries no error suffix", async () => {
     const a = ws.startSession();
     fs.writeFileSync(ws.file("a.md"), "a");
     await a.command("5m ping");
@@ -1075,16 +1073,16 @@ describe("AC-S4 a non-owner line", () => {
     expect(ws.loops().some((l) => l.lastError !== undefined)).toBe(true);
     const b = ws.startSession();
     ws.tick();
-    expect(b.status()).toBe(`  2 loops · owned by pid ${a.pid}${HINT}`);
+    expect(b.status()).toBe(`  2 loops · owned by pid ${a.pid}`);
     await a.command("stop p");
     ws.tick();
-    expect(b.status()).toBe(`  1 loop · owned by pid ${a.pid}${HINT}`);
+    expect(b.status()).toBe(`  1 loop · owned by pid ${a.pid}`);
     expect(b.status()).not.toMatch(/active/);
   });
 });
 
 describe("AC-S5 error suffix", () => {
-  test("one loop with a last error adds · 1 error before the hint; two add · 2 errors", async () => {
+  test("one loop with a last error ends the line in · 1 error; two end it in · 2 errors", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("a.md"), "a");
     fs.writeFileSync(ws.file("b.md"), "b");
@@ -1094,23 +1092,23 @@ describe("AC-S5 error suffix", () => {
     fs.rmSync(ws.file("a.md"));
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()).toBe(`  3 active loops · next b 10:05 · 1 error${HINT}`);
+    expect(s.status()).toBe(`  3 active loops · next b 10:05 · 1 error`);
     fs.rmSync(ws.file("b.md"));
     ws.tick();
     ws.clock.advance(5000);
     ws.tick();
-    expect(s.status()).toBe(`  3 active loops · next a 10:10 · 2 errors${HINT}`);
+    expect(s.status()).toBe(`  3 active loops · next a 10:10 · 2 errors`);
   });
 });
 
 describe("AC-S6 no loops removes the widget", () => {
-  test("stop of the last loop removes it and drops its pulse; a --max fire pulses without the hint, then removes it", async () => {
+  test("stop of the last loop removes it and drops its pulse; a --max fire pulses with the fired clause alone, then removes it", async () => {
     const s = ws.startSession();
     expect(s.widgets).toHaveLength(0);
     await s.command("5m ping");
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.status()).toBe(`  1 active loop · fired loop-1 #1${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · fired loop-1 #1`);
     await s.command("stop loop-1");
     expect(s.status()).toBeUndefined();
     expect(s.widgets[s.widgets.length - 1]).toEqual({ key: "pi-loop", factory: undefined, placement: undefined });
@@ -1135,7 +1133,7 @@ describe("AC-S6 no loops removes the widget", () => {
     ws.clock.advance(5 * MIN);
     ws.tick();
     await s.command("stop a");
-    expect(s.status()).toBe(`  1 active loop · fired b #1${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · fired b #1`);
   });
 });
 
@@ -1151,7 +1149,7 @@ describe("AC-S7 requestRender only when the text changes", () => {
     }
     expect(s.widgets.length).toBe(widgets);
     expect(s.requestRenders).toBe(renders);
-    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05`);
   });
 });
 
@@ -1169,10 +1167,10 @@ describe("AC-S8 commands update the line in the same call", () => {
     await s.command("stop b");
     seen.push(s.status());
     expect(seen).toEqual([
-      `  2 active loops · next b 10:05${HINT}`,
-      `  1 active loop, 1 paused · next a 12:00${HINT}`,
-      `  2 active loops · next b 10:05${HINT}`,
-      `  1 active loop · next a 12:00${HINT}`,
+      `  2 active loops · next b 10:05`,
+      `  1 active loop, 1 paused · next a 12:00`,
+      `  2 active loops · next b 10:05`,
+      `  1 active loop · next a 12:00`,
     ]);
   });
 });
@@ -1181,12 +1179,12 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
   const label = (text: string) => `<muted>${text}</muted>`;
   const detail = (text: string) => `<dim>${text}</dim>`;
 
-  test("steady: muted count, plain joiner, dim next clause and hint in one segment", async () => {
+  test("steady: muted count, plain joiner, dim next clause", async () => {
     const s = ws.startSession();
     await s.command("5m --name fast a");
     await s.command("1h --name p b");
     await s.command("pause p");
-    expect(s.styled()).toBe(`  ${label("1 active loop, 1 paused")} · ${detail("next fast 10:05 · alt+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 active loop, 1 paused")} · ${detail("next fast 10:05")}`);
   });
 
   test("due: the due clause is in the dim detail", async () => {
@@ -1196,7 +1194,7 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     s.compacting();
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("due loop-1 · alt+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("due loop-1")}`);
   });
 
   test("fired pulse: the fired clause is in the dim detail, not bold", async () => {
@@ -1204,25 +1202,36 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     await s.command("5m ping");
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("fired loop-1 #1 · alt+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 active loop")} · ${detail("fired loop-1 #1")}`);
   });
 
-  test("all paused: muted count, plain joiner, dim hint alone", async () => {
+  test("all paused: the muted count alone, no joiner", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     await s.command("pause loop-1");
-    expect(s.styled()).toBe(`  ${label("1 paused loop")} · ${detail("alt+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("1 paused loop")}`);
   });
 
-  test("non-owner: muted count, dim owner clause and hint", async () => {
+  test("all paused with an error: the error suffix is the dim detail", async () => {
+    const s = ws.startSession();
+    fs.writeFileSync(ws.file("a.md"), "a");
+    await s.command("5m --name a @a.md");
+    fs.rmSync(ws.file("a.md"));
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    await s.command("pause a");
+    expect(s.styled()).toBe(`  ${label("1 paused loop")} · ${detail("1 error")}`);
+  });
+
+  test("non-owner: muted count, dim owner clause", async () => {
     const a = ws.startSession();
     await a.command("5m ping");
     const b = ws.startSession();
     ws.tick();
-    expect(b.styled()).toBe(`  ${label("1 loop")} · ${detail(`owned by pid ${a.pid} · alt+l to manage`)}`);
+    expect(b.styled()).toBe(`  ${label("1 loop")} · ${detail(`owned by pid ${a.pid}`)}`);
   });
 
-  test("error: the suffix sits inside the dim detail before the hint, with a next clause and with a pulse", async () => {
+  test("error: the suffix ends the dim detail, after a next clause and after a pulse", async () => {
     const s = ws.startSession();
     fs.writeFileSync(ws.file("a.md"), "a");
     await s.command("5m --name a @a.md");
@@ -1230,11 +1239,11 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     fs.rmSync(ws.file("a.md"));
     ws.clock.advance(5 * MIN);
     ws.tick();
-    expect(s.styled()).toBe(`  ${label("2 active loops")} · ${detail("next a 10:10 · 1 error · alt+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("2 active loops")} · ${detail("next a 10:10 · 1 error")}`);
     await s.command("1m --name c now");
     ws.clock.advance(MIN);
     ws.tick();
-    expect(s.styled()).toBe(`  ${label("3 active loops")} · ${detail("fired c #1 · 1 error · alt+l to manage")}`);
+    expect(s.styled()).toBe(`  ${label("3 active loops")} · ${detail("fired c #1 · 1 error")}`);
   });
 
   test("pulse only: no loops remain after --max; the fired clause is the muted label alone", async () => {
@@ -1252,7 +1261,7 @@ describe("AC-S9 the line is a muted label, a plain joiner, and one dim detail", 
     if (!factory) throw new Error("no widget registered");
     const other = { fg: (color: string, text: string) => `[${color}]${text}`, bold: (text: string) => `*${text}` };
     const line = factory({ requestRender() {} }, other).render(200)[0];
-    expect(line).toBe(`  [muted]1 active loop · [dim]next loop-1 10:05 · alt+l to manage`);
+    expect(line).toBe(`  [muted]1 active loop · [dim]next loop-1 10:05`);
   });
 });
 
@@ -1273,7 +1282,7 @@ describe("AC-S11 the line is one below-editor widget, redrawn through requestRen
     await s.command("stop b");
     expect(s.widgets).toHaveLength(1);
     expect(s.requestRenders).toBe(4);
-    expect(s.status()).toBe(`  1 active loop · next a 12:00${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next a 12:00`);
 
     await s.command("stop a");
     expect(s.widgets).toHaveLength(2);
@@ -1282,7 +1291,7 @@ describe("AC-S11 the line is one below-editor widget, redrawn through requestRen
     await s.command("5m --name c z");
     expect(s.widgets).toHaveLength(3);
     expect(s.widgets[2]?.placement).toBe("belowEditor");
-    expect(s.status()).toBe(`  1 active loop · next c 10:05${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next c 10:05`);
   });
 });
 
@@ -1301,7 +1310,7 @@ describe("AC-S12 every rendered line fits its width", () => {
     const widget = factory({ requestRender() {} }, ansi);
     const full = widget.render(200);
     expect(full).toHaveLength(1);
-    expect(stripAnsi(full[0] ?? "")).toBe(`  2 active loops · next b 10:05 · 1 error${HINT}`);
+    expect(stripAnsi(full[0] ?? "")).toBe(`  2 active loops · next b 10:05 · 1 error`);
     for (let width = 1; width <= 80; width++) {
       const lines = widget.render(width);
       expect(lines).toHaveLength(1);
@@ -2490,7 +2499,7 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
     expect(ws.loops().map((l) => l.name)).toEqual(["a"]);
     expect(s.status()).toBe([ROSTER_HEADER, `  › ${"a".padEnd(10)}  active   next 11:00  every 1h  #0`].join("\n"));
     expect(s.press(ESC)).toBe(true);
-    expect(s.status()).toBe("  1 active loop · next a 11:00 · alt+l to manage");
+    expect(s.status()).toBe("  1 active loop · next a 11:00");
     expect(s.editorKeys).toEqual([]);
   });
 
@@ -2692,7 +2701,7 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
       expect(s.status()).toBeUndefined();
     }
     await s.command("5m ping");
-    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05`);
   });
 
   test("TUI without a started session, reachable only after shutdown: the command fails loudly instead of opening nothing", async () => {
@@ -3771,7 +3780,7 @@ describe("AC-17 a loop keeps at most one fire waiting", () => {
     }
     expect(s.fires).toHaveLength(1);
     expect(s.notices).toHaveLength(before);
-    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05${HINT}`);
+    expect(s.status()).toBe(`  1 active loop · next loop-1 10:05`);
   });
 
   test("a loop stopped with a waiting fire leaves no mark for a loop created later under the same name", async () => {

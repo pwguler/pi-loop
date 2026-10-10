@@ -22,15 +22,13 @@ export type Line = Segment[];
 /** The shortcut that opens the roster and, while it is open, closes it. */
 export const ROSTER_KEY: KeyId = "alt+l";
 
-const HINT = `${ROSTER_KEY} to manage`;
-
 /**
  * The status line as segments, or undefined when there is no line: a muted
- * label, a plain " · " joiner, and one dim detail that carries its own
- * separators and the hint; no glyph, nothing bold.
- * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error] · alt+l to manage
- * Paused:    1 paused loop · alt+l to manage
- * Non-owner: 2 loops · owned by pid 4242 · alt+l to manage
+ * label, then, when a detail follows, a plain " · " joiner and one dim detail
+ * that carries its own separators; no glyph, nothing bold, no key named.
+ * Owner:     2 active loops, 1 paused · next fast 10:05 | ... · due fast | ... · fired fast #6 [· 1 error]
+ * Paused:    1 paused loop (the label alone) | 1 paused loop · 1 error
+ * Non-owner: 2 loops · owned by pid 4242
  * No loops, just fired: fired fast #3 (the label alone)
  */
 export function statusLine(
@@ -45,7 +43,7 @@ export function statusLine(
     return [{ text: `fired ${pulse.name} #${pulse.fires}`, color: "muted" }];
   }
   if (owner !== undefined) {
-    return line(plural(loops.length, "loop"), [`owned by pid ${owner}`, HINT]);
+    return line(plural(loops.length, "loop"), [`owned by pid ${owner}`]);
   }
   const active = loops.filter((l) => !l.paused);
   const paused = loops.length - active.length;
@@ -62,12 +60,13 @@ export function statusLine(
   if (pulse) parts.push(`fired ${pulse.name} #${pulse.fires}`);
   else if (next !== undefined) parts.push(due ? `due ${next.name}` : `next ${next.name} ${formatNext(next.dueAt, now)}`);
   if (errors > 0) parts.push(plural(errors, "error"));
-  parts.push(HINT);
   return line(count, parts);
 }
 
 function line(label: string, detail: string[]): Segment[] {
-  return [{ text: label, color: "muted" }, { text: " \u00b7 " }, { text: detail.join(" \u00b7 "), color: "dim" }];
+  const head: Segment = { text: label, color: "muted" };
+  if (detail.length === 0) return [head];
+  return [head, { text: " \u00b7 " }, { text: detail.join(" \u00b7 "), color: "dim" }];
 }
 
 function plural(n: number, noun: string): string {
