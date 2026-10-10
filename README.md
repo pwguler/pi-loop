@@ -10,6 +10,8 @@ From npm:
 pi install npm:@pwguler/pi-loop
 ```
 
+Each release is also published to GitHub Packages (`npm.pkg.github.com`). Installing from there needs a GitHub token with `read:packages`.
+
 Or straight from GitHub (no npm account needed):
 
 ```sh
@@ -167,11 +169,21 @@ with `#`; the default cleanup deletes them, Markdown headings included.
 refuses the release unless the tag matches `package.json`, the tagged commit is
 on `main`, the version is not already on the registry, and the tag is annotated
 with a non-empty message. It publishes to npm with a provenance attestation
-linking the tarball to this repository and commit. A last job creates the
-GitHub Release from the tag message, and skips it if that release exists. If
-`npm publish` succeeds and that last job fails, re-run the failed job only:
-re-running all jobs stops at the registry check, because the version is already
-published.
+linking the tarball to this repository and commit. Then two jobs run side by
+side. One creates the GitHub Release from the tag message, and skips it if that
+release exists. The other, `.github/workflows/github-packages.yml`, publishes
+the same version to GitHub Packages with the workflow's `GITHUB_TOKEN`, and
+skips it if GitHub Packages has that version. If `npm publish` succeeds and
+either job fails, re-run the failed jobs only: re-running all jobs stops at the
+registry check, because the version is already published.
+
+To put a release that npm carries on GitHub Packages, such as one tagged before
+that workflow existed, dispatch the workflow on `main` with the tag. It refuses
+a tag whose version npm does not have:
+
+```sh
+gh workflow run github-packages.yml --ref main -f tag=v0.7.0
+```
 
 To bump the pi devDependency, run `bun update` for all four pi packages, since
 bun otherwise keeps the resolved versions of the `*` peers:
@@ -201,6 +213,10 @@ On the token form, leave **Organizations** at *No access*: this package lives in
 a user scope (`@pwguler`), not an organization, so a personal account has
 nothing to select there. Choosing *Only select packages and scopes* instead of
 *All packages* asks for a scope selection that such an account cannot satisfy.
+
+GitHub Packages needs no secret: its job uses the workflow's `GITHUB_TOKEN`.
+GitHub Packages makes a package private on its first publish; set its
+visibility to public once, in the package's settings on GitHub.
 
 `.github/workflows/ci.yml` runs typecheck and tests on pull requests and pushes
 to `main`, and is the same gate the publish job depends on.
