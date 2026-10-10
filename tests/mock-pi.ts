@@ -1,7 +1,7 @@
 // Mock pi host for driving extensions/pi-loop.ts in bun test.
 //
-// A MockPi implements the narrow LoopHost surface the extension uses: on,
-// registerCommand, registerShortcut, sendUserMessage. Fires and notices are recorded. The clock,
+// A Session implements the narrow LoopHost surface the extension uses: on,
+// registerCommand, registerMarkdownTransformer, sendUserMessage. Fires and notices are recorded. The clock,
 // pid, pid liveness, and ticker are all injected so a test drives time and
 // process death explicitly. sessionManager is a Proxy that throws on every
 // member except getSessionId, so any read of conversation history fails loudly.
@@ -10,7 +10,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, AssistantMessage, Context, Model, StopReason } from "@earendil-works/pi-ai";
-import { isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
 import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/pi-loop/index.ts";
 
 export interface Fire {
@@ -186,7 +185,7 @@ export class Workspace {
     };
   }
 
-  /** Start a session: fresh MockPi, fresh pid (alive), session_start emitted. */
+  /** Start a session: fresh Session, fresh pid (alive), session_start emitted. */
   startSession(opts: { pid?: number; hasUI?: boolean; mode?: LoopContext["mode"] } = {}): Session {
     const pid = opts.pid ?? this.nextPid++;
     this.alive.add(pid);
@@ -211,21 +210,9 @@ export function dialogComponent(): unknown {
   return { render: () => [], invalidate() {}, handleInput() {} };
 }
 
-/** Whether a focused component is pi's editor, which alone runs extension shortcuts. */
-function isEditor(component: unknown): boolean {
-  const c = component as { getText?: unknown; setText?: unknown } | null | undefined;
-  return typeof c?.getText === "function" && typeof c.setText === "function";
-}
-
-type ShortcutHandler = Parameters<LoopHost["registerShortcut"]>[1]["handler"];
-
 export class Session implements LoopHost {
   readonly handlers = new Map<string, LoopHandler>();
   readonly commands = new Map<string, (args: string, ctx: LoopContext) => Promise<void>>();
-  /** Registered shortcuts by key, in registration order. */
-  readonly shortcuts = new Map<KeyId, ShortcutHandler>();
-  /** Errors from shortcut handlers, which pi shows as an error line instead of throwing. */
-  readonly shortcutErrors: string[] = [];
   readonly transformers: MarkdownTransform[] = [];
   readonly fires: Fire[] = [];
   readonly notices: Notice[] = [];
@@ -242,7 +229,7 @@ export class Session implements LoopHost {
   /** Terminal input listeners, in subscription order. */
   readonly inputListeners: InputHandler[] = [];
   /**
-   * Keys that no listener consumed and no shortcut took, as rewritten by the listeners: what pi
+   * Keys that no listener consumed, as rewritten by the listeners: what pi
    * passes on to the focused component. pi-tui drops a key release there, so the editor never sees one.
    */
   readonly editorKeys: string[] = [];
@@ -376,10 +363,6 @@ export class Session implements LoopHost {
     this.commands.set(name, options.handler);
   }
 
-  registerShortcut(shortcut: KeyId, options: { description?: string; handler: ShortcutHandler }): void {
-    this.shortcuts.set(shortcut, options.handler);
-  }
-
   registerMarkdownTransformer(transformer: MarkdownTransform): void {
     this.transformers.push(transformer);
   }
@@ -459,11 +442,7 @@ export class Session implements LoopHost {
   /**
    * A key from the terminal, as pi-tui delivers it: listeners run in
    * subscription order, the first {consume:true} stops it, a returned data
-   * rewrites it. Then, as pi's editor does, the first registered shortcut
-   * whose key matches takes it, only while the editor has focus and never for
-   * a key release, which pi-tui drops before the editor. The handler starts
-   * without blocking, as in pi; `await flush()` lets it finish. Returns
-   * whether the key was consumed or taken by a shortcut; any other key is
+   * rewrites it. Returns whether the key was consumed; any other key is
    * recorded in editorKeys.
    */
   press(data: string): boolean {
@@ -472,15 +451,6 @@ export class Session implements LoopHost {
       const result = listener(current);
       if (result?.consume) return true;
       if (result?.data !== undefined) current = result.data;
-    }
-    if (!isKeyRelease(current) && isEditor(this.focused)) {
-      for (const [key, handler] of this.shortcuts) {
-        if (!matchesKey(current, key)) continue;
-        Promise.resolve(handler(this.ctx)).catch((e: unknown) => {
-          this.shortcutErrors.push(e instanceof Error ? e.message : String(e));
-        });
-        return true;
-      }
     }
     this.editorKeys.push(current);
     return false;

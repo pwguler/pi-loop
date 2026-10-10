@@ -5,7 +5,7 @@
 // lives in <cwd>/.pi-loop/loops.json and owner.json, never in the session.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { defaultName, parseCommand } from "./command.ts";
 import { chooseName, NAMING_TIMEOUT_MS, namingNote, uniqueName, type Chosen } from "./naming.ts";
 import { nextDue } from "./schedule.ts";
@@ -18,7 +18,6 @@ import {
   formatLocal,
   lineText,
   rosterLines,
-  ROSTER_KEY,
   scheduleText,
   statusLine,
   statusWidget,
@@ -251,11 +250,9 @@ export function run(pi: LoopHost, deps: Deps): void {
   }
 
   /**
-   * A terminal key, before the editor sees it. Collapsed, every key passes but
-   * a repeat of ROSTER_KEY: the roster opens through the ROSTER_KEY shortcut,
-   * which pi runs after every listener let the key pass. Open: ↓/j and ↑/k move,
-   * ↑/k on the first row,
-   * Esc, and ROSTER_KEY collapse, p pauses and r resumes the selected loop
+   * A terminal key, before the editor sees it. Collapsed, every key passes:
+   * the roster opens only through /loop. Open: ↓/j and ↑/k move, ↑/k on the
+   * first row and Esc collapse, p pauses and r resumes the selected loop
    * through the typed command, x asks and stops it, and any other key
    * collapses and passes through; Enter opens the selected loop's panel.
    * While the panel or the stop confirmation is open every key is its own.
@@ -263,8 +260,6 @@ export function run(pi: LoopHost, deps: Deps): void {
    */
   function onKey(live: Session, data: string): { consume: true } | undefined {
     if (isKeyRelease(data) || live.panelOpen || live.confirmOpen) return undefined;
-    // Holding the shortcut sends repeats: they leave the roster as it is, open or closed, instead of toggling it.
-    if (isKeyRepeat(data) && matchesKey(data, ROSTER_KEY)) return { consume: true };
     const roster = live.roster;
     if (!roster) return undefined;
     const collapse = () => {
@@ -308,7 +303,7 @@ export function run(pi: LoopHost, deps: Deps): void {
       }
       return { consume: true };
     }
-    if (matchesKey(data, "escape") || matchesKey(data, ROSTER_KEY)) {
+    if (matchesKey(data, "escape")) {
       collapse();
       return { consume: true };
     }
@@ -393,15 +388,6 @@ export function run(pi: LoopHost, deps: Deps): void {
   pi.registerMarkdownTransformer((markdown, { messageType }) => {
     if (messageType !== "user") return markdown;
     return displayFire(markdown);
-  });
-
-  // The roster's shortcut takes the path of a typed /loop list. pi runs it only while its editor has focus.
-  pi.registerShortcut(ROSTER_KEY, {
-    description: "Open the loop roster",
-    handler: async (ctx) => {
-      await handle("list", ctx);
-      render();
-    },
   });
 
   pi.registerCommand("loop", {
