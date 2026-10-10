@@ -84,15 +84,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  github-packages:
-    needs: publish
-    uses: ./.github/workflows/github-packages.yml
-    with:
-      tag: ${{ github.ref_name }}
-    permissions:
-      contents: read
-      packages: write
-
   github-release:
     name: create GitHub Release
     needs: publish
