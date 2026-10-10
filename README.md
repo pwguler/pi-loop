@@ -214,9 +214,8 @@ a user scope (`@pwguler`), not an organization, so a personal account has
 nothing to select there. Choosing *Only select packages and scopes* instead of
 *All packages* asks for a scope selection that such an account cannot satisfy.
 
-GitHub Packages needs no secret: its job uses the workflow's `GITHUB_TOKEN`.
-GitHub Packages makes a package private on its first publish; set its
-visibility to public once, in the package's settings on GitHub.
+GitHub Packages needs no secret: its job uses the workflow's `GITHUB_TOKEN`, and
+the package it publishes is public and linked to this repository.
 
 `.github/workflows/ci.yml` runs typecheck and tests on pull requests and pushes
 to `main`, and is the same gate the publish job depends on.
