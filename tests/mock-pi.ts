@@ -1,6 +1,6 @@
 // Mock pi host for driving extensions/pi-loop.ts in bun test.
 //
-// A MockPi implements the narrow LoopHost surface the extension uses: on,
+// A Session implements the narrow LoopHost surface the extension uses: on,
 // registerCommand, registerMarkdownTransformer, sendUserMessage. Fires and notices are recorded. The clock,
 // pid, pid liveness, and ticker are all injected so a test drives time and
 // process death explicitly. sessionManager is a Proxy that throws on every
