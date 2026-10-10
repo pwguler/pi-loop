@@ -4,7 +4,7 @@
 // conversation.
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { formatInterval } from "./interval.ts";
 import type { Loop, Panel, Schedule } from "./types.ts";
 
@@ -18,9 +18,6 @@ export interface Segment {
 
 /** One widget line: its segments drawn side by side. */
 export type Line = Segment[];
-
-/** The shortcut that opens the roster and, while it is open, closes it. */
-export const ROSTER_KEY: KeyId = "alt+l";
 
 /**
  * The status line as segments, or undefined when there is no line: a muted

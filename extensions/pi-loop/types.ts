@@ -4,7 +4,6 @@
 
 import type { Api, AssistantMessage, Context, Model, ModelsApiStreamOptions } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { KeyId } from "@earendil-works/pi-tui";
 import type { Cron } from "./cron.ts";
 
 export interface Panel {
@@ -74,11 +73,6 @@ export interface LoopHost {
   registerCommand(
     name: string,
     options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> },
-  ): void;
-  /** pi runs the handler when the key reaches its editor after every terminal input listener let it pass. */
-  registerShortcut(
-    shortcut: KeyId,
-    options: { description?: string; handler: (ctx: LoopContext) => Promise<void> | void },
   ): void;
   /** Display-only: pi renders the returned Markdown; the stored message and model context are untouched. */
   registerMarkdownTransformer(transformer: MarkdownTransform): void;

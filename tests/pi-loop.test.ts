@@ -1360,33 +1360,20 @@ const ESC = "\x1b";
 const ENTER = "\r";
 /** ↓ released, in the Kitty keyboard protocol's event-type form: pi-tui's isKeyRelease recognizes it and matchesKey still reads it as down. */
 const DOWN_RELEASE = "\x1b[1;1:3B";
-/** alt+l as a terminal without the kitty keyboard protocol sends it: Esc followed by l. */
-const SHORTCUT = "\x1bl";
+/** alt+l as a terminal without the kitty keyboard protocol sends it: Esc followed by l. pi-loop gives it no meaning. */
+const ALT_L = "\x1bl";
 /** alt+l as a terminal reports it with the kitty keyboard protocol (108 is l; modifier 3 is 1 + alt 2). */
-const SHORTCUT_KITTY = "\x1b[108;3u";
+const ALT_L_KITTY = "\x1b[108;3u";
 /** alt+l in xterm's modifyOtherKeys form, which pi-tui also reads as alt+l. */
-const SHORTCUT_XTERM = "\x1b[27;3;108~";
-/** alt+l released, in the kitty event-type form: matchesKey still reads it as alt+l, isKeyRelease as a release. */
-const SHORTCUT_RELEASE = "\x1b[108;3:3u";
+const ALT_L_XTERM = "\x1b[27;3;108~";
 /** alt+l held down: the kitty key-repeat form, which matchesKey still reads as alt+l. */
-const SHORTCUT_REPEAT = "\x1b[108;3:2u";
-/** ctrl+l, pi's model selector key. */
-const CTRL_L = "\x0c";
-/** ctrl+shift+l in the kitty form (modifier 6 is 1 + shift 1 + ctrl 4): a different key from alt+l. */
-const CTRL_SHIFT_L = "\x1b[108;6u";
-/** Esc followed by L: what a terminal without the kitty keyboard protocol sends for alt+shift+l. pi-tui reads it as no key it names, and never as alt+l. */
-const ALT_SHIFT_L = "\x1bL";
+const ALT_L_REPEAT = "\x1b[108;3:2u";
+/** Every form of alt+l a terminal sends. */
+const ALT_L_FORMS = [ALT_L, ALT_L_KITTY, ALT_L_XTERM, ALT_L_REPEAT];
 /** The roster header while the selected loop is active. */
 const ROSTER_HEADER = "  loops · ↑↓/jk select · p pause · x stop · enter open · esc back";
 /** The roster header while the selected loop is paused. */
 const ROSTER_HEADER_PAUSED = "  loops · ↑↓/jk select · r resume · x stop · enter open · esc back";
-
-/** Press the roster shortcut and let its handler finish, since pi starts it without waiting; returns whether pi took the key. */
-async function shortcut(s: Session, data = SHORTCUT): Promise<boolean> {
-  const taken = s.press(data);
-  await s.flush();
-  return taken;
-}
 
 /**
  * A listener that plays pi-subagents' roster (src/tui/fleet-status.ts handleKey): with an empty
@@ -1435,38 +1422,30 @@ function fleetRoster(s: Session, first = false) {
   return state;
 }
 
-describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay with the editor and the next listener", () => {
-  test("the shortcut opens it with the first row selected and pi takes the key", async () => {
+describe("AC-R1 no shortcut: the closed roster consumes no key, so every key reaches the next listener or the editor", () => {
+  test("alt+l in its Esc+l, kitty, xterm, and kitty repeat forms is not consumed, opens nothing, writes nothing, and reaches the editor", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
-    await s.command("5m --name fast b");
     const line = s.status();
-    expect(await shortcut(s)).toBe(true);
-    expect(s.status()?.split("\n").slice(0, 2)).toEqual([ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #0"]);
-    expect(s.press(ESC)).toBe(true);
+    const renders = s.requestRenders;
+    const before = fs.readFileSync(ws.file(".pi-loop/loops.json"));
+    s.clearNotices();
+    for (const key of ALT_L_FORMS) expect(s.press(key)).toBe(false);
+    await s.flush();
+    expect(s.editorKeys).toEqual(ALT_L_FORMS);
     expect(s.status()).toBe(line);
-    expect(await shortcut(s)).toBe(true);
-    expect(s.status()?.split("\n")[1]).toBe("  › slow        active   next 12:00  every 2h  #0");
-    expect(s.editorKeys).toEqual([]);
+    expect(s.requestRenders).toBe(renders);
+    expect(s.notices).toEqual([]);
+    expect(fs.readFileSync(ws.file(".pi-loop/loops.json")).equals(before)).toBe(true);
   });
 
-  test("the kitty and xterm modifyOtherKeys forms of alt+l open it too", async () => {
-    for (const form of [SHORTCUT_KITTY, SHORTCUT_XTERM]) {
-      const s = ws.startSession();
-      await s.command("2h --name slow a");
-      expect(await shortcut(s, form)).toBe(true);
-      expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
-      expect(s.editorKeys).toEqual([]);
-      s.shutdown();
-    }
-  });
-
-  test("the shortcut is registered once, as alt+l, in every mode", () => {
-    for (const mode of ["tui", "rpc", "json", "print"] as const) {
-      const s = ws.startSession({ mode });
-      expect([...s.shortcuts.keys()]).toEqual(["alt+l"]);
-      s.shutdown();
-    }
+  test("with no loops, alt+l prints nothing and registers no widget", async () => {
+    const s = ws.startSession();
+    for (const key of ALT_L_FORMS) expect(s.press(key)).toBe(false);
+    await s.flush();
+    expect(s.notices).toEqual([]);
+    expect(s.widgets).toEqual([]);
+    expect(s.editorKeys).toEqual(ALT_L_FORMS);
   });
 
   test("right with a closed roster is not consumed, opens nothing, and reaches the editor", async () => {
@@ -1478,33 +1457,6 @@ describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay 
     expect(s.editorKeys).toEqual([RIGHT]);
     expect(s.status()).toBe(line);
     expect(s.requestRenders).toBe(renders);
-  });
-
-  test("ctrl+l, pi's model selector key, opens nothing and reaches the editor", async () => {
-    const s = ws.startSession();
-    await s.command("2h --name slow a");
-    const line = s.status();
-    expect(await shortcut(s, CTRL_L)).toBe(false);
-    expect(s.editorKeys).toEqual([CTRL_L]);
-    expect(s.status()).toBe(line);
-  });
-
-  test("ctrl+shift+l in its kitty form opens nothing and reaches the editor", async () => {
-    const s = ws.startSession();
-    await s.command("2h --name slow a");
-    const line = s.status();
-    expect(await shortcut(s, CTRL_SHIFT_L)).toBe(false);
-    expect(s.editorKeys).toEqual([CTRL_SHIFT_L]);
-    expect(s.status()).toBe(line);
-  });
-
-  test("alt+shift+l, Esc followed by L, opens nothing and reaches the editor", async () => {
-    const s = ws.startSession();
-    await s.command("2h --name slow a");
-    const line = s.status();
-    expect(await shortcut(s, ALT_SHIFT_L)).toBe(false);
-    expect(s.editorKeys).toEqual([ALT_SHIFT_L]);
-    expect(s.status()).toBe(line);
   });
 
   test("down and left with a closed roster are not consumed and open nothing", async () => {
@@ -1519,7 +1471,7 @@ describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay 
     expect(s.requestRenders).toBe(renders);
   });
 
-  test("in the chain [pi-loop, a listener that opens on down or left]: down and left reach it, the shortcut opens pi-loop's roster", async () => {
+  test("in the chain [pi-loop, a listener that opens on down or left]: down and left reach it, /loop opens pi-loop's roster", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     const line = s.status();
@@ -1535,7 +1487,7 @@ describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay 
     expect(s.press(LEFT)).toBe(true);
     expect(other).toEqual([DOWN, LEFT]);
     expect(s.status()).toBe(line);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(other).toEqual([DOWN, LEFT]);
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
   });
@@ -1550,99 +1502,30 @@ describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay 
       other.push(data);
       return data === LEFT ? { consume: true } : undefined;
     });
-    // A closed roster consumes nothing, so the shortcut passes every listener before pi runs it.
-    await shortcut(s);
+    await s.command("");
     expect(s.press(LEFT)).toBe(true);
-    expect(other).toEqual([SHORTCUT, LEFT]);
+    expect(other).toEqual([LEFT]);
     expect(s.status()).toBe(line);
-    await shortcut(s);
+    await s.command("");
     expect(s.press(RIGHT)).toBe(false);
-    expect(other).toEqual([SHORTCUT, LEFT, SHORTCUT, RIGHT]);
+    expect(other).toEqual([LEFT, RIGHT]);
     expect(s.status()).toBe(line);
-    await shortcut(s);
+    await s.command("");
     expect(s.press(DOWN)).toBe(true);
-    expect(other).toEqual([SHORTCUT, LEFT, SHORTCUT, RIGHT, SHORTCUT]);
+    expect(other).toEqual([LEFT, RIGHT]);
     expect(s.status()?.split("\n")[2]?.startsWith("  › fast")).toBe(true);
   });
 
-  test("the pulse-only line has no loops behind it: the shortcut notifies no loops and nothing opens", async () => {
-    const s = ws.startSession();
-    await s.command("5m --max 1 once");
-    ws.clock.advance(5 * MIN);
-    ws.tick();
-    expect(s.status()).toBe("  fired loop-1 #1");
-    s.clearNotices();
-    expect(await shortcut(s)).toBe(true);
-    expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
-    expect(s.editorKeys).toEqual([]);
-    expect(s.status()).toBe("  fired loop-1 #1");
-  });
-
-  test("no loops: the shortcut notifies no loops, registers no widget, and opens nothing", async () => {
-    const s = ws.startSession();
-    expect(await shortcut(s)).toBe(true);
-    expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
-    expect(s.widgets).toEqual([]);
-    expect(s.status()).toBeUndefined();
-    expect(s.editorKeys).toEqual([]);
-  });
-
-  test("text in the editor does not stop the shortcut: it opens the roster and the text stays", async () => {
-    const s = ws.startSession();
-    await s.command("5m ping");
-    for (const text of ["draft", " "]) {
-      s.editorText = text;
-      expect(await shortcut(s)).toBe(true);
-      expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
-      expect(s.press(ESC)).toBe(true);
-    }
-    expect(s.editorText).toBe(" ");
-    expect(s.editorKeys).toEqual([]);
-  });
-
-  test("a dialog or no component with focus: pi does not run the shortcut, the key passes, and nothing opens", async () => {
+  test("keys pass through untouched while the roster is closed: j, k, h, p, r, x, up (history), down, left, right, Enter, Esc", async () => {
     const s = ws.startSession();
     await s.command("5m ping");
     const line = s.status();
-    const renders = s.requestRenders;
-    for (const focused of [dialogComponent(), null, undefined]) {
-      s.focused = focused;
-      expect(await shortcut(s)).toBe(false);
-    }
-    expect(s.editorKeys).toEqual([SHORTCUT, SHORTCUT, SHORTCUT]);
+    const keys = ["j", "k", "h", "p", "r", "x", UP, DOWN, LEFT, RIGHT, ENTER, ESC];
+    for (const key of keys) expect(s.press(key)).toBe(false);
+    expect(s.editorKeys).toEqual(keys);
     expect(s.status()).toBe(line);
-    expect(s.requestRenders).toBe(renders);
-    s.focused = editorComponent();
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
-  });
-
-  test("a key release never runs the shortcut: press then release opens once, and press then release again closes once", async () => {
-    const s = ws.startSession();
-    await s.command("5m ping");
-    const line = s.status();
-    expect(await shortcut(s, SHORTCUT_RELEASE)).toBe(false);
-    expect(s.status()).toBe(line);
-    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
-    const open = s.status();
-    expect(open?.startsWith(ROSTER_HEADER)).toBe(true);
-    expect(await shortcut(s, SHORTCUT_RELEASE)).toBe(false);
-    expect(s.status()).toBe(open);
-    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
-    expect(s.status()).toBe(line);
-    expect(await shortcut(s, SHORTCUT_RELEASE)).toBe(false);
-    expect(s.status()).toBe(line);
-    expect(s.editorKeys).toEqual([SHORTCUT_RELEASE, SHORTCUT_RELEASE, SHORTCUT_RELEASE]);
-  });
-
-  test("typing keys the editor owns pass through untouched while the roster is closed: j, k, h, up (history), down, left, right, Enter", async () => {
-    const s = ws.startSession();
-    await s.command("5m ping");
-    const line = s.status();
-    for (const key of ["j", "k", "h", UP, DOWN, LEFT, RIGHT, ENTER]) expect(s.press(key)).toBe(false);
-    expect(s.editorKeys).toEqual(["j", "k", "h", UP, DOWN, LEFT, RIGHT, ENTER]);
-    expect(s.status()).toBe(line);
-    expect(await shortcut(s)).toBe(true);
   });
 
   test("a tui with no focus getter counts as not focused: the open roster fails closed on the next key, which passes", async () => {
@@ -1653,14 +1536,14 @@ describe("AC-R1 the shortcut alt+l opens the roster; right, down, and left stay 
     const plain = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
     let blind = 0;
     factory({ requestRender: () => (blind += 1) }, plain);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(blind).toBe(1);
     expect(s.press("j")).toBe(false);
     expect(blind).toBe(2);
     expect(s.editorKeys).toEqual(["j"]);
     let seeing = 0;
     factory({ requestRender: () => (seeing += 1), getFocusedComponent: editorComponent }, plain);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(seeing).toBe(1);
     expect(s.press("j")).toBe(true);
     expect(s.editorKeys).toEqual(["j"]);
@@ -1673,13 +1556,13 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await a.command("2h --name slow a");
     await a.command("5m --name fast b");
     await a.command("pause fast");
-    await shortcut(a);
+    await a.command("");
     expect(a.status()).toBe(
       [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #0", "    fast        paused   next -      every 5m  #0"].join("\n"),
     );
     const b = ws.startSession();
     ws.tick();
-    await shortcut(b);
+    await b.command("");
     expect(b.status()?.split("\n")[1]).toBe(`  › slow        owned by pid ${a.pid}  next 12:00  every 2h  #0`);
   });
 
@@ -1688,7 +1571,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await a.command("2h --name slow a");
     await a.command("5m --name fast b");
     await a.command("pause fast");
-    await shortcut(a);
+    await a.command("");
     expect(a.styled()).toBe(
       [
         "  <muted>loops</muted> <dim>· ↑↓/jk select · p pause · x stop · enter open · esc back</dim>",
@@ -1698,7 +1581,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     );
     const b = ws.startSession();
     ws.tick();
-    await shortcut(b);
+    await b.command("");
     b.press(DOWN);
     expect(b.styled()?.split("\n").slice(1)).toEqual([
       `    slow        <muted>owned by pid ${a.pid}</muted>  next 12:00  every 2h  #0`,
@@ -1710,7 +1593,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     const a = ws.startSession();
     await a.command("2h --name nightly-build x");
     await a.command("5m --name a y");
-    await shortcut(a);
+    await a.command("");
     expect(a.status()?.split("\n").slice(1)).toEqual([
       "  › nightly-build  active   next 12:00  every 2h  #0",
       "    a              active   next 10:05  every 5m  #0",
@@ -1719,7 +1602,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await a.command("1h --name sixteen-chars-ok z");
     await a.command("1h --name seventeen-chars-x w");
     await a.command("pause a");
-    await shortcut(a);
+    await a.command("");
     expect(a.status()?.split("\n").slice(1)).toEqual([
       "  › nightly-build     active   next 12:00  every 2h  #0",
       "    a                 paused   next -      every 5m  #0",
@@ -1728,7 +1611,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     ]);
     const b = ws.startSession();
     ws.tick();
-    await shortcut(b);
+    await b.command("");
     expect(b.status()?.split("\n").slice(1)).toEqual([
       `  › nightly-build     owned by pid ${a.pid}  next 12:00  every 2h  #0`,
       "    a                 paused             next -      every 5m  #0",
@@ -1743,7 +1626,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await s.command("--name build 15m y");
     await s.command("--name idle 1h z");
     await s.command("pause idle");
-    await shortcut(s);
+    await s.command("");
     expect(s.status()?.split("\n").slice(1)).toEqual([
       "  › tue         active   next 09-08 09:00  cron 0 9 * * 2  #0",
       "    build       active   next 10:15        every 15m       #0",
@@ -1755,7 +1638,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     const s = ws.startSession();
     for (let i = 0; i < 10; i++) await s.command(`1h --name l${i} x`);
     const names = () => (s.status() ?? "").split("\n").slice(1).map((l) => l.slice(2, 7).trim());
-    await shortcut(s);
+    await s.command("");
     expect(names()).toEqual(["› l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7"]);
     for (let i = 0; i < 8; i++) s.press(DOWN);
     expect(names()).toEqual(["l1", "l2", "l3", "l4", "l5", "l6", "l7", "› l8"]);
@@ -1770,7 +1653,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     const s = ws.startSession();
     await s.command("2h --name a-rather-long-loop-name a");
     await s.command("5m --name b b");
-    await shortcut(s);
+    await s.command("");
     const factory = s.widgets[s.widgets.length - 1]?.factory;
     if (!factory) throw new Error("no widget registered");
     const ansi = { fg: (_color: string, text: string) => `\x1b[32m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m` };
@@ -1792,7 +1675,7 @@ describe("AC-R2 the roster draws a header and one row per loop", () => {
     await s.command("1h --name a x");
     await s.command("1h --name b y");
     await s.command("pause b");
-    await shortcut(s);
+    await s.command("");
     const header = () => s.status()?.split("\n")[0];
     expect(header()).toBe(ROSTER_HEADER);
     s.press("j");
@@ -1838,7 +1721,7 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
     const s = await three();
     const line = s.status();
     const r0 = s.requestRenders;
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.requestRenders).toBe(r0 + 1);
     expect(s.press("j")).toBe(true);
     expect(selected(s)).toBe("b");
@@ -1857,7 +1740,7 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
     expect(s.press("k")).toBe(true);
     expect(s.status()).toBe(line);
     expect(s.requestRenders).toBe(r2 + 1);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.press(UP)).toBe(true);
     expect(s.status()).toBe(line);
     expect(s.editorKeys).toEqual([]);
@@ -1866,81 +1749,36 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
   test("Esc collapses and is consumed", async () => {
     const s = await three();
     const line = s.status();
-    await shortcut(s);
+    await s.command("");
     s.press(DOWN);
     expect(s.press(ESC)).toBe(true);
     expect(s.status()).toBe(line);
     expect(s.editorKeys).toEqual([]);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(selected(s)).toBe("a");
   });
 
-  test("any other key collapses and reaches the editor unchanged: h is typed, tab, right, and left pass", async () => {
+  test("any other key collapses and reaches the editor unchanged: h is typed; tab, right, left, and alt+l in each form pass", async () => {
     const s = await three();
     const line = s.status();
-    await shortcut(s);
+    await s.command("");
     expect(s.press("h")).toBe(false);
     expect(s.status()).toBe(line);
-    await shortcut(s);
+    await s.command("");
     expect(s.press("\t")).toBe(false);
     expect(s.status()).toBe(line);
-    for (const key of [RIGHT, LEFT]) {
-      await shortcut(s);
+    for (const key of [RIGHT, LEFT, ...ALT_L_FORMS]) {
+      await s.command("");
       expect(s.press(key)).toBe(false);
       expect(s.status()).toBe(line);
     }
-    expect(s.editorKeys).toEqual(["h", "\t", RIGHT, LEFT]);
-  });
-
-  test("the shortcut on the open roster collapses it and is consumed, so it toggles the roster from any row", async () => {
-    const s = await three();
-    const line = s.status();
-    await shortcut(s);
-    s.press("j");
-    const r0 = s.requestRenders;
-    expect(await shortcut(s)).toBe(true);
-    expect(s.status()).toBe(line);
-    expect(s.requestRenders).toBe(r0 + 1);
-    expect(await shortcut(s, SHORTCUT_XTERM)).toBe(true);
-    expect(selected(s)).toBe("a");
-    expect(await shortcut(s, SHORTCUT_XTERM)).toBe(true);
-    expect(s.status()).toBe(line);
-    expect(s.editorKeys).toEqual([]);
-  });
-
-  test("holding the shortcut keeps the roster open: its repeats are consumed and change nothing", async () => {
-    const s = await three();
-    const line = s.status();
-    await shortcut(s, SHORTCUT_KITTY);
-    s.press("j");
-    const open = s.status();
-    for (let i = 0; i < 3; i++) expect(s.press(SHORTCUT_REPEAT)).toBe(true);
-    await s.flush();
-    expect(s.status()).toBe(open);
-    expect(selected(s)).toBe("b");
-    expect(s.press(SHORTCUT_RELEASE)).toBe(false);
-    expect(s.status()).toBe(open);
-    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
-    expect(s.status()).toBe(line);
-    expect(s.editorKeys).toEqual([SHORTCUT_RELEASE]);
-  });
-
-  test("holding the shortcut that closed the roster keeps it closed: its repeats are consumed and never reach pi's shortcut", async () => {
-    const s = await three();
-    const line = s.status();
-    await shortcut(s, SHORTCUT_KITTY);
-    expect(await shortcut(s, SHORTCUT_KITTY)).toBe(true);
-    expect(s.status()).toBe(line);
-    for (let i = 0; i < 3; i++) expect(s.press(SHORTCUT_REPEAT)).toBe(true);
-    await s.flush();
-    expect(s.status()).toBe(line);
-    expect(s.editorKeys).toEqual([]);
+    expect(s.editorKeys).toEqual(["h", "\t", RIGHT, LEFT, ...ALT_L_FORMS]);
   });
 
   test("a key arriving while the editor has lost focus collapses the roster and passes through", async () => {
     const s = await three();
     const line = s.status();
-    await shortcut(s);
+    await s.command("");
     s.focused = dialogComponent();
     expect(s.press(DOWN)).toBe(false);
     expect(s.status()).toBe(line);
@@ -1949,7 +1787,7 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
 
   test("a key release passes through and leaves the roster as it is", async () => {
     const s = await three();
-    await shortcut(s);
+    await s.command("");
     const open = s.status();
     expect(s.press(DOWN_RELEASE)).toBe(false);
     expect(s.status()).toBe(open);
@@ -1958,7 +1796,7 @@ describe("AC-R3 keys on the open roster move, collapse, or pass through", () => 
 
   test("ticks with nothing changing leave the open roster alone", async () => {
     const s = await three();
-    await shortcut(s);
+    await s.command("");
     const open = s.status();
     expect(open?.startsWith(ROSTER_HEADER)).toBe(true);
     const renders = s.requestRenders;
@@ -1997,7 +1835,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     await s.command("5m --name first ping");
     await s.command("2h --name nightly --max 10 --until 23:30 @p.md");
     const seen = panel(s, [ESC, ESC]);
-    await shortcut(s);
+    await s.command("");
     expect(s.press(ENTER)).toBe(true);
     await s.flush();
     expect(selectedName(s)).toBe("first");
@@ -2056,7 +1894,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
       styled = p.render(60);
       p.handleInput?.("\x03");
     };
-    await shortcut(s);
+    await s.command("");
     s.press(ENTER);
     await s.flush();
     expect(styled[0]).toBe(`<border>${"─".repeat(60)}</border>`);
@@ -2075,7 +1913,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     await s.command("1h --name b y");
     await s.command("1h --name c z");
     const p = hold(s);
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     const open = s.status();
     const widgets = s.widgets.length;
@@ -2100,35 +1938,13 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     expect(selectedName(s)).toBe("c");
   });
 
-  test("the shortcut while a loop's panel has focus is the panel's key: pi runs no shortcut and the panel stays open", async () => {
-    const s = ws.startSession();
-    await s.command("1h --name a x");
-    await s.command("1h --name b y");
-    const p = hold(s);
-    await shortcut(s);
-    s.press("j");
-    const open = s.status();
-    s.press(ENTER);
-    s.clearNotices();
-    expect(await shortcut(s)).toBe(false);
-    expect(s.editorKeys).toEqual([SHORTCUT]);
-    expect(s.status()).toBe("");
-    expect(s.notices).toEqual([]);
-    expect(p.opened()).toBe(1);
-    p.key(ESC);
-    await s.flush();
-    expect(s.status()).toBe(open);
-    expect(await shortcut(s)).toBe(true);
-    expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(false);
-  });
-
   test("when the loop is gone by the time the panel closes, the row now at its index is selected, or the last row", async () => {
     const s = ws.startSession();
     await s.command("1h --name a x");
     await s.command("1h --name b y");
     await s.command("1h --name c z");
     const p = hold(s);
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.press(ENTER);
     await s.command("stop b");
@@ -2146,7 +1962,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     const s = ws.startSession();
     await s.command("1h --name a x");
     const p = hold(s);
-    await shortcut(s);
+    await s.command("");
     s.press(ENTER);
     expect(s.status()).toBe("");
     await s.command("stop a");
@@ -2158,7 +1974,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     expect(s.status()).toBeUndefined();
     expect(s.widgets).toHaveLength(widgets);
     s.clearNotices();
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
     expect(s.status()).toBeUndefined();
     expect(s.widgets).toHaveLength(widgets);
@@ -2177,7 +1993,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
         throw new Error("boom");
       };
       const seen = panel(s, ["x", ESC]);
-      await shortcut(s);
+      await s.command("");
       s.press(ENTER);
       await s.flush();
       expect(errors).toEqual(["pi-loop: boom"]);
@@ -2201,7 +2017,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     };
     try {
       panel(s, ["p"]);
-      await shortcut(s);
+      await s.command("");
       s.press(ENTER);
       s.failNextRender = new Error("render boom");
       await s.flush();
@@ -2217,7 +2033,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
     const s = ws.startSession();
     await s.command("5m ping");
     const p = hold(s);
-    await shortcut(s);
+    await s.command("");
     s.press(ENTER);
     s.shutdown();
     const widgets = s.widgets.length;
@@ -2234,7 +2050,7 @@ describe("AC-R4 Enter on the roster opens the selected loop's detail panel", () 
       return true;
     };
     const q = hold(t);
-    await shortcut(t);
+    await t.command("");
     t.press(ENTER);
     q.key("x");
     await t.flush();
@@ -2251,7 +2067,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     await s.command("1h --name b pong");
     s.clearNotices();
     const seen = panel(s, ["p", "r"]);
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.press(ENTER);
     await s.flush();
@@ -2272,7 +2088,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     const s = ws.startSession();
     await s.command("1h --name a x");
     const p = hold(s);
-    await shortcut(s);
+    await s.command("");
     s.press(ENTER);
     const before = fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8");
     s.clearNotices();
@@ -2304,7 +2120,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     const s = ws.startSession();
     await s.command("1h --name a x");
     await s.command("1h --name b y");
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.clearNotices();
     expect(s.press("p")).toBe(true);
@@ -2326,7 +2142,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     await s.command("5m --name b y");
     await s.command("pause b");
     ws.clock.advance(7 * MIN);
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.clearNotices();
     expect(s.press("r")).toBe(true);
@@ -2345,7 +2161,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     await s.command("1h --name a x");
     await s.command("1h --name b y");
     await s.command("pause b");
-    await shortcut(s);
+    await s.command("");
     const open = s.status();
     const file = ws.file(".pi-loop/loops.json");
     const before = fs.readFileSync(file, "utf8");
@@ -2368,7 +2184,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     const s = ws.startSession();
     await s.command("1h --name a x");
     const line = s.status();
-    await shortcut(s);
+    await s.command("");
     expect(s.press("p")).toBe(true);
     await s.flush();
     expect(s.status()?.startsWith(ROSTER_HEADER_PAUSED)).toBe(true);
@@ -2386,7 +2202,7 @@ describe("AC-R5 p pauses and r resumes, on the panel and on the open roster", ()
     await s.command("1h --name b y");
     await s.command("1h --name c z");
     const p = hold(s);
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.press(ENTER);
     await s.command("stop a");
@@ -2418,7 +2234,7 @@ describe("AC-R6 x on the panel asks first", () => {
     const answers = [false, true, true];
     s.confirmImpl = () => answers.shift() ?? false;
     panel(s, ["x", "x", "x"]);
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.press(ENTER);
     await s.flush();
@@ -2442,7 +2258,7 @@ describe("AC-R6 x on the panel asks first", () => {
     expect(s.status()).toBeUndefined();
     expect(s.widgets[s.widgets.length - 1]?.factory).toBeUndefined();
     s.clearNotices();
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
     expect(s.status()).toBeUndefined();
   });
@@ -2460,7 +2276,7 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
 
   test("x asks Stop <name>? and is consumed; no changes nothing and keeps the roster open on the same loop", async () => {
     const s = await three();
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     const open = s.status();
     const before = file();
@@ -2480,7 +2296,7 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
 
   test("yes stops the loop through the typed command; the roster stays open on the row now at its index, or the last row", async () => {
     const s = await three();
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.clearNotices();
     s.confirmImpl = () => true;
@@ -2506,7 +2322,7 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
   test("yes on a paused loop stops it too, and the header follows the loop selected afterwards", async () => {
     const s = await three();
     await s.command("pause b");
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     expect(s.status()?.split("\n")[0]).toBe(ROSTER_HEADER_PAUSED);
     s.confirmImpl = () => true;
@@ -2520,7 +2336,7 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
   test("x on the last loop closes the roster and removes the status line", async () => {
     const s = ws.startSession();
     await s.command("1h --name a x");
-    await shortcut(s);
+    await s.command("");
     s.clearNotices();
     s.confirmImpl = () => true;
     expect(s.press("x")).toBe(true);
@@ -2532,17 +2348,17 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
     expect(s.widgets[s.widgets.length - 1]?.factory).toBeUndefined();
     expect(s.editorKeys).toEqual([]);
     s.clearNotices();
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
   });
 
   for (const yes of [false, true]) {
     test(`the keys that answer the dialog pass to it untouched: they neither collapse nor move the roster, nor reach the editor (${yes ? "yes" : "no"})`, async () => {
       const s = await three();
-      await shortcut(s);
+      await s.command("");
       s.press("j");
       const open = s.status();
-      const keys = ["j", "k", DOWN, UP, "p", "r", "x", "h", SHORTCUT, yes ? ENTER : ESC];
+      const keys = ["j", "k", DOWN, UP, "p", "r", "x", "h", ALT_L, yes ? ENTER : ESC];
       const answered: Array<{ key: string; consumed: boolean; editorFocused: boolean; status: string | undefined }> = [];
       s.confirmImpl = () => {
         for (const key of keys) {
@@ -2555,9 +2371,8 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
       expect(s.press("x")).toBe(true);
       await s.flush();
       expect(answered).toEqual(keys.map((key) => ({ key, consumed: false, editorFocused: false, status: open })));
-      // The mock records each key no listener consumed. Each arrived while the dialog had focus, so the dialog received it, not the editor or pi's shortcut.
+      // The mock records each key no listener consumed. Each arrived while the dialog had focus, so the dialog received it, not the editor.
       expect(s.editorKeys).toEqual(keys);
-      expect(s.shortcutErrors).toEqual([]);
       expect(ws.loops().map((l) => [l.name, l.paused])).toEqual(
         yes
           ? [
@@ -2581,7 +2396,7 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
   test("a stop dialog that outlives its session stops nothing: yes after a new session start leaves the loop", async () => {
     const s = ws.startSession();
     await s.command("1h --name a x");
-    await shortcut(s);
+    await s.command("");
     s.clearNotices();
     s.confirmImpl = () => {
       s.emit("session_start");
@@ -2602,9 +2417,9 @@ describe("AC-R6 x on the open roster asks first, as on the panel", () => {
     expect(s.status()).toBe("  fired loop-1 #1");
     // Another session adds a loop this one has not read yet; the state file breaks before this one draws the roster.
     await ws.startSession({ mode: "print" }).command("1h --name b y");
-    s.press(SHORTCUT);
+    const opening = s.command("");
     fs.writeFileSync(ws.file(".pi-loop/loops.json"), "{");
-    await s.flush();
+    await opening;
     expect(s.status()).toBe("  fired loop-1 #1");
     s.clearNotices();
     expect(s.press("x")).toBe(true);
@@ -2624,7 +2439,7 @@ describe("AC-R7 escape and ctrl+c on the panel return to the roster; other keys 
     const before = fs.readFileSync(ws.file(".pi-loop/loops.json"), "utf8");
     s.clearNotices();
     const p = hold(s);
-    await shortcut(s);
+    await s.command("");
     const open = s.status();
     for (const back of [ESC, "\x03"]) {
       s.press(ENTER);
@@ -2644,12 +2459,12 @@ describe("AC-R7 escape and ctrl+c on the panel return to the roster; other keys 
 });
 
 describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print the text listing elsewhere", () => {
-  test("TUI: both forms open the roster exactly as the shortcut does, first row selected, writing nothing; keys work afterwards", async () => {
+  test("TUI: both forms open the roster on the first row, writing nothing; keys work afterwards", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     await s.command("5m --name fast b");
     const line = s.status();
-    await shortcut(s);
+    await s.command("");
     const roster = s.status();
     expect(roster).toBe(
       [ROSTER_HEADER, "  › slow        active   next 12:00  every 2h  #0", "    fast        active   next 10:05  every 5m  #0"].join("\n"),
@@ -2702,6 +2517,20 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
     }
     await s.command("5m ping");
     expect(s.status()).toBe(`  1 active loop · next loop-1 10:05`);
+  });
+
+  test("TUI with only the pulse line left: the notice no loops, and the line stays as it is", async () => {
+    const s = ws.startSession();
+    await s.command("5m --max 1 once");
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(s.status()).toBe("  fired loop-1 #1");
+    for (const args of ["", "list"]) {
+      s.clearNotices();
+      await s.command(args);
+      expect(s.notices).toEqual([{ message: "no loops", type: "info" }]);
+      expect(s.status()).toBe("  fired loop-1 #1");
+    }
   });
 
   test("TUI without a started session, reachable only after shutdown: the command fails loudly instead of opening nothing", async () => {
@@ -2761,17 +2590,6 @@ describe("AC-R8 bare /loop and /loop list open the roster in TUI mode and print 
     }
   });
 
-  test("outside the TUI the shortcut's handler takes the path of /loop list and prints the text listing", async () => {
-    const a = ws.startSession();
-    await a.command("1h --name b pong");
-    a.shutdown();
-    const p = ws.startSession({ mode: "rpc" });
-    const listing = await listText(p);
-    p.clearNotices();
-    expect(await shortcut(p)).toBe(true);
-    expect(p.notices).toEqual([{ message: listing, type: "info" }]);
-    expect(p.status()).toBeUndefined();
-  });
 });
 
 describe("AC-R9 the open roster follows live changes by the next tick", () => {
@@ -2779,7 +2597,7 @@ describe("AC-R9 the open roster follows live changes by the next tick", () => {
     const s = ws.startSession();
     await s.command("5m --name a x");
     await s.command("1h --name b y");
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     const other = ws.startSession();
     ws.clock.advance(5 * MIN);
@@ -2797,7 +2615,7 @@ describe("AC-R9 the open roster follows live changes by the next tick", () => {
     const s = ws.startSession();
     for (const name of ["a", "b", "c", "d"]) await s.command(`1h --name ${name} x`);
     await s.command("5m --name m --max 1 y");
-    await shortcut(s);
+    await s.command("");
     s.press("j");
     s.press("j");
     expect(selectedName(s)).toBe("c");
@@ -2829,7 +2647,7 @@ describe("AC-R10 opening and closing the roster writes nothing", () => {
     const file = ws.file(".pi-loop/loops.json");
     const before = fs.readFileSync(file);
     const mtime = fs.statSync(file).mtimeMs;
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.press("j")).toBe(true);
     expect(s.press(ESC)).toBe(true);
     expect(fs.readFileSync(file).equals(before)).toBe(true);
@@ -2890,7 +2708,7 @@ async function create(s: Session, args: string): Promise<{ name: string | undefi
 }
 
 describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
-  test("pi-loop first: down and left open the other roster and pi-loop's stays closed; the shortcut opens pi-loop's", async () => {
+  test("pi-loop first: down and left open the other roster and pi-loop's stays closed; /loop opens pi-loop's", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     const closed = s.status();
@@ -2905,12 +2723,12 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
     expect(other.seen).toEqual([DOWN, ESC, LEFT]);
     expect(s.status()).toBe(closed);
     s.press(ESC);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
     expect(other.active).toBe(false);
   });
 
-  test("the other listener first: down and left open the other roster and pi-loop's stays closed; the shortcut opens pi-loop's", async () => {
+  test("the other listener first: down and left open the other roster and pi-loop's stays closed; /loop opens pi-loop's", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     const closed = s.status();
@@ -2925,7 +2743,7 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
     expect(other.seen).toEqual([DOWN, ESC, LEFT]);
     expect(s.status()).toBe(closed);
     s.press(ESC);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
     expect(other.active).toBe(false);
   });
@@ -2956,7 +2774,7 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
     await s.command("2h --name slow a");
     const closed = s.status();
     const other = fleetRoster(s);
-    await shortcut(s);
+    await s.command("");
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
     expect(s.press(LEFT)).toBe(true);
     expect(other.active).toBe(true);
@@ -2965,7 +2783,7 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
 
   for (const first of [false, true]) {
     const order = first ? "the other listener first" : "pi-loop first";
-    test(`${order}: the shortcut while the other roster is open closes it and opens pi-loop's, which then takes the keys`, async () => {
+    test(`${order}: typing /loop while the other roster is open closes it with /, and the command opens pi-loop's, which then takes the keys`, async () => {
       const s = ws.startSession();
       await s.command("2h --name slow a");
       await s.command("5m --name fast b");
@@ -2973,17 +2791,18 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
       const other = fleetRoster(s, first);
       s.press(DOWN);
       expect(other.active).toBe(true);
-      expect(await shortcut(s)).toBe(true);
+      expect(s.press("/")).toBe(false);
       expect(other.active).toBe(false);
-      expect(other.seen).toEqual([DOWN, SHORTCUT]);
+      await s.command("");
+      expect(other.seen).toEqual([DOWN, "/"]);
       expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
       expect(s.press("j")).toBe(true);
       expect(s.status()?.split("\n")[2]?.startsWith("  › fast")).toBe(true);
-      expect(other.seen).toEqual([DOWN, SHORTCUT]);
-      expect(await shortcut(s)).toBe(true);
+      expect(other.seen).toEqual([DOWN, "/"]);
+      expect(s.press(ESC)).toBe(true);
       expect(s.status()).toBe(closed);
       expect(other.active).toBe(false);
-      expect(s.editorKeys).toEqual([]);
+      expect(s.editorKeys).toEqual(["/"]);
     });
   }
 
@@ -2992,19 +2811,19 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
     await s.command("2h --name slow a");
     await s.command("5m --name fast b");
     const other = fleetRoster(s);
-    await shortcut(s);
+    await s.command("");
     expect(s.press(DOWN)).toBe(true);
     expect(s.status()?.split("\n")[2]?.startsWith("  › fast")).toBe(true);
     expect(other.active).toBe(false);
     expect(other.seen).toEqual([]);
   });
 
-  test("the other listener first: the shortcut opens pi-loop's roster and j and k move it; down there reaches the other listener first", async () => {
+  test("the other listener first: /loop opens pi-loop's roster and j and k move it; down there reaches the other listener first", async () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     await s.command("5m --name fast b");
     const other = fleetRoster(s, true);
-    expect(await shortcut(s)).toBe(true);
+    await s.command("");
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
     expect(other.seen).toEqual([]);
     expect(s.press("j")).toBe(true);
@@ -3021,7 +2840,7 @@ describe("AC-R12 beside a roster that behaves like pi-subagents'", () => {
     const s = ws.startSession();
     await s.command("2h --name slow a");
     const other = fleetRoster(s, true);
-    await shortcut(s);
+    await s.command("");
     expect(s.status()?.startsWith(ROSTER_HEADER)).toBe(true);
     expect(s.press(LEFT)).toBe(true);
     expect(other.active).toBe(true);
@@ -4151,7 +3970,7 @@ describe("AC-C8 a cron loop shows as cron <expression>", () => {
       ["standup  active  next 2026-09-07 09:30  cron 30 9 * * 1-5  fires 0", "build  active  next 2026-09-06 10:15  every 15m  fires 0"].join("\n"),
     );
     const seen = panel(s, [ESC]);
-    await shortcut(s);
+    await s.command("");
     expect(s.status()?.split("\n").slice(1)).toEqual([
       "  › standup     active   next 09:30  cron 30 9 * * 1-5  #0",
       "    build       active   next 10:15  every 15m          #0",
