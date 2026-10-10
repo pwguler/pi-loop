@@ -185,7 +185,7 @@ export class Workspace {
     };
   }
 
-  /** Start a session: fresh MockPi, fresh pid (alive), session_start emitted. */
+  /** Start a session: fresh Session, fresh pid (alive), session_start emitted. */
   startSession(opts: { pid?: number; hasUI?: boolean; mode?: LoopContext["mode"] } = {}): Session {
     const pid = opts.pid ?? this.nextPid++;
     this.alive.add(pid);

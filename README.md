@@ -49,7 +49,7 @@ loops · ↑↓/jk select · p pause · x stop · enter open · esc back
 loops · ↑↓/jk select · r resume · x stop · enter open · esc back
 ```
 
-↑↓ or j/k select, and Enter opens the selected loop's detail panel. p pauses the selected loop and r resumes it, and the roster stays open on that loop. x asks `Stop <name>?`; yes stops the loop, and the roster stays open on the row that takes its place, or the last row. Esc goes back to the status line, and so does ↑ on the first row. Any other key closes the roster and goes to the editor. With no loops, both forms print `no loops`.
+↑↓ or j/k select, and Enter opens the selected loop's detail panel. p pauses the selected loop and r resumes it, and the roster stays open on that loop. x asks `Stop <name>?`; yes stops the loop, and the roster stays open on the row that takes its place, or the last row. Esc goes back to the status line, and so does ↑ or k on the first row. Any other key closes the roster and goes to the editor. With no loops, both forms print `no loops`.
 
 The detail panel (interval or cron expression, prompt, next, fires, status, bounds, last error) is drawn like pi's own dialogs, with single keys along the bottom. The first key follows the loop's state:
 
@@ -107,7 +107,7 @@ While loops exist, and for 5s after the last loop's final fire, one line shows b
   2 loops · owned by pid 4242                    this session is not the owner
 ```
 
-The line uses the tones of pi-subagents' fleet line. The count is `muted`. Everything after it is one `dim` segment behind a plain ` · `: the next, due, fired, or owner clause, and the error suffix. The count stands alone when nothing follows it: every loop paused, no error, and no fire in the last 5s. When the last loop ends on its `--max` fire, the line reads `fired <name> #<n>` alone, in `muted`, for 5s and then disappears. Nothing in the line is bold or colored beyond those two tones. The line is redrawn only when its text changes.
+The line uses the tones of pi-subagents' fleet line. The count is `muted`. Everything after it is one `dim` segment behind a plain ` · `: the next, due, fired, or owner clause, and the error suffix. In the owner's line, the count stands alone when nothing follows it: every loop paused, no error, and no fire in the last 5s. When the last loop ends on its `--max` fire, the line reads `fired <name> #<n>` alone, in `muted`, for 5s and then disappears. Nothing in the line is bold or colored beyond those two tones. The line is redrawn only when its text changes.
 
 pi offers each key to the extensions' terminal listeners in the order they registered, which follows the package order in settings. The first listener that consumes a key keeps it. pi-subagents opens its roster with ↓ or ← on an empty editor while its fleet line shows. pi-loop's closed roster consumes no key, so ↓ and ← reach pi-subagents. Typing `/loop` while pi-subagents' roster is open closes that roster on `/`, which it passes, and the command then opens pi-loop's, in either package order. With pi-loop listed first in the package list, ← inside pi-loop's open roster closes it and opens pi-subagents' roster if that is closed. With pi-subagents listed first, ↓ and ← inside pi-loop's open roster reach pi-subagents first and open its roster while pi-loop's stays open. pi-subagents then takes ↓, ↑, j, k, Enter, and Esc first; use j and k to move in pi-loop's roster before opening pi-subagents'.
 
