@@ -48,10 +48,3 @@ Or from GitHub: `pi install git:github.com/pwguler/pi-loop`. Start or reload pi,
 ## State
 
 Loops live in `<cwd>/.pi-loop/` and survive a restart. Only one TUI session in a cwd fires them. Another TUI session in that cwd shows `owned by pid <n>`, and takes over once that process is gone. Grid points that passed while pi was down do not fire.
-
-## Cost
-
-Each fire is a user message, so it starts a model turn that reads the whole conversation so far. Its cost grows with the length of the session, not with the prompt. In one measured session of about 560,000 tokens, a fire answered without tools cost about $0.28 with that session's model: about $17 an hour for a `1m` loop. All of that session's fires read the conversation from the provider's cache. After a long gap the cache can expire, and the next fire then costs more.
-
-- Run frequent loops in a short session of their own.
-- Bound a loop with `--max` or `--until`, and pause a loop you are not watching. A paused loop sends nothing.
