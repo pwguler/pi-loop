@@ -9,7 +9,7 @@
     "type": "git",
     "url": "git+https://github.com/pwguler/pi-loop.git"
   },
-  "main": "./extensions/pi-loop/index.ts",
+  "main": "./extensions/index.ts",
   "files": [
     "extensions",
     "README.md",
@@ -39,7 +39,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/pi-loop/index.ts"
+      "./extensions/index.ts"
     ]
   },
   "devDependencies": {

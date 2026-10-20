@@ -12,7 +12,7 @@ import type {
   SessionShutdownEvent,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { LoopHost } from "../extensions/pi-loop/types.ts";
+import type { LoopHost } from "../extensions/types.ts";
 
 type Rest = Omit<LoopHost, "on">;
 type On<E> = (event: E, ctx: ExtensionContext) => void;

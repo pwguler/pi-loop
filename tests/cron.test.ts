@@ -1,7 +1,7 @@
 // The cron grammar of docs/specs/pi-loop-cron.md AC-C2 and AC-C3: what each field allows, the day rule, and what rejects.
 
 import { describe, expect, test } from "bun:test";
-import { parseCron } from "../extensions/pi-loop/cron.ts";
+import { parseCron } from "../extensions/cron.ts";
 
 const sorted = (values: ReadonlySet<number>) => [...values].sort((a, b) => a - b);
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);

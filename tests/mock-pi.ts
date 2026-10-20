@@ -1,4 +1,4 @@
-// Mock pi host for driving extensions/pi-loop.ts in bun test.
+// Mock pi host for driving extensions/index.ts in bun test.
 //
 // A Session implements the narrow LoopHost surface the extension uses: on,
 // registerCommand, registerMarkdownTransformer, sendUserMessage. Fires and notices are recorded. The clock,
@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, AssistantMessage, Context, Model, StopReason } from "@earendil-works/pi-ai";
-import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/pi-loop/index.ts";
+import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/index.ts";
 
 export interface Fire {
   text: string;

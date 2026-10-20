@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { Panel } from "../extensions/pi-loop/index.ts";
+import type { Panel } from "../extensions/index.ts";
 import { dialogComponent, editorComponent, TEST_MODEL, Workspace, type Session } from "./mock-pi.ts";
 
 // A fixed instant in local time so header and list output are asserted

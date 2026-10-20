@@ -1,8 +1,8 @@
 // The grid of docs/specs/pi-loop.md AC-16 and the cron points of docs/specs/pi-loop-cron.md AC-C4, on the local wall clock.
 
 import { describe, expect, test } from "bun:test";
-import { parseCron, type Cron } from "../extensions/pi-loop/cron.ts";
-import { nextCronPoint, nextGridPoint } from "../extensions/pi-loop/schedule.ts";
+import { parseCron, type Cron } from "../extensions/cron.ts";
+import { nextCronPoint, nextGridPoint } from "../extensions/schedule.ts";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
