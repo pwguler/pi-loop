@@ -369,11 +369,11 @@ export class Session implements LoopHost {
   }
 
   /** Call the loop tool as the model would; a thrown error is the tool error pi reports to the model. */
-  async tool(params: LoopToolParams): Promise<{ text: string } | { error: string }> {
+  async tool(params: LoopToolParams, signal?: AbortSignal): Promise<{ text: string } | { error: string }> {
     const tool = this.tools.get("loop");
     if (!tool) throw new Error("the loop tool is not registered");
     try {
-      const result = await tool.execute("call-1", params, undefined, undefined, this.ctx);
+      const result = await tool.execute("call-1", params, signal, undefined, this.ctx);
       return { text: result.content.map((c) => c.text).join("") };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };

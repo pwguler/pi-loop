@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { LoopToolParams } from "../extensions/index.ts";
-import { Workspace } from "./mock-pi.ts";
+import { TEST_MODEL, Workspace } from "./mock-pi.ts";
 
 // 2026-09-06 10:00 local, as in pi-loop.test.ts.
 const T0 = new Date(2026, 8, 6, 10, 0, 0, 0).getTime();
@@ -74,6 +74,24 @@ describe("AC-T3 naming and errors match /loop and write nothing", () => {
   test("without a name the loop is named as /loop names it", async () => {
     const s = ws.startSession();
     expect(await s.tool({ action: "create", schedule: "5m", prompt: "ping" })).toEqual({ text: "created loop-1, every 5m, next 2026-09-06 10:05" });
+    expect(await s.tool({ action: "create", schedule: "5m", prompt: "ping", name: "" })).toEqual({ text: "created loop-2, every 5m, next 2026-09-06 10:05" });
+  });
+
+  test("a call aborted while the model picks a name creates nothing, then or later", async () => {
+    const s = ws.startSession();
+    s.model = TEST_MODEL;
+    s.modelAnswer = "until-aborted";
+    const abort = new AbortController();
+    const pending = s.tool({ action: "create", schedule: "5m", prompt: "look over the open pull requests and flag stale ones" }, abort.signal);
+    await s.flush();
+    abort.abort();
+    expect(await pending).toEqual({ error: "cancelled; no loop created" });
+    ws.expireNaming();
+    await s.flush();
+    ws.clock.advance(5 * MIN);
+    ws.tick();
+    expect(ws.loops()).toEqual([]);
+    expect(s.fires).toEqual([]);
   });
 
   test("each bad input fails with /loop's error and creates nothing", async () => {
@@ -167,6 +185,17 @@ describe("AC-T7 the status line shows a tool call's change at once", () => {
     expect(s.status()).toBe("  1 paused loop");
     await s.tool({ action: "stop", name: "a" });
     expect(s.status()).toBeUndefined();
+  });
+});
+
+describe("/loop keeps its notices and their order", () => {
+  test("a typed create shows created before what the tick after it removes", async () => {
+    const s = ws.startSession();
+    await s.command("5m ping --name a --until 10:01");
+    ws.clock.advance(MIN);
+    s.clearNotices();
+    await s.command("5m pong --name b");
+    expect(s.notices.map((n) => n.message)).toEqual(["created b, every 5m, next 2026-09-06 10:05", "a reached until 2026-09-06 10:01, removed"]);
   });
 });
 

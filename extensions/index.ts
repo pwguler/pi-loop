@@ -411,9 +411,10 @@ export function run(pi: LoopHost, deps: Deps): void {
       "A user message that starts with [loop <name> #<n> <time>] is a fire of loop <name>; when its prompt says to stop once a condition holds and that condition now holds, call loop with action stop and that name.",
     ],
     parameters: LOOP_TOOL_PARAMETERS,
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const cmd = toolCommand(params, deps.now());
-      const outcome = cmd.ok ? await execute(cmd.value, ctx) : cmd;
+      const outcome = cmd.ok ? await execute(cmd.value, ctx, signal) : cmd;
+      if (cmd.ok && cmd.value.kind === "create" && outcome.ok) tick();
       render();
       if (!outcome.ok) throw new Error(outcome.error);
       return { content: [{ type: "text", text: outcome.value }], details: undefined };
@@ -441,10 +442,15 @@ export function run(pi: LoopHost, deps: Deps): void {
     }
     const outcome = await execute(cmd, ctx);
     ctx.ui.notify(outcome.ok ? outcome.value : outcome.error, outcome.ok ? "info" : "error");
+    if (cmd.kind === "create" && outcome.ok) tick();
   }
 
-  /** Run a command from /loop or the loop tool against the state file; returns its notice, or its error. */
-  async function execute(cmd: Command, ctx: LoopContext): Promise<Result<string>> {
+  /**
+   * Run a command from /loop or the loop tool against the state file; returns its notice, or its error.
+   * A create is followed by a tick, which the caller runs after showing the notice. An aborted
+   * `signal` (the tool call's) ends the naming wait and saves nothing.
+   */
+  async function execute(cmd: Command, ctx: LoopContext, signal?: AbortSignal): Promise<Result<string>> {
     const now = deps.now();
     const loaded = loadLoops(ctx.cwd);
     if (!loaded.ok) return loaded;
@@ -479,7 +485,10 @@ export function run(pi: LoopHost, deps: Deps): void {
 
     // Without --name the name is settled first, so the save, the notice, and the first fire all carry it.
     const chosen: Chosen | undefined =
-      cmd.name === undefined ? await chooseName(cmd.prompt, ctx, deps.namingDeadline, now) : undefined;
+      cmd.name === undefined
+        ? await chooseName(cmd.prompt, ctx, signal ? () => AbortSignal.any([deps.namingDeadline(), signal]) : deps.namingDeadline, now)
+        : undefined;
+    if (signal?.aborted) return { ok: false, error: "cancelled; no loop created" };
     // The wait for a name can span other creates, stops, and fires: read the state file again so the name and the save see them.
     const reloaded = loadLoops(ctx.cwd);
     if (!reloaded.ok) return reloaded;
@@ -502,7 +511,6 @@ export function run(pi: LoopHost, deps: Deps): void {
     latest.push(loop);
     saveLoops(ctx.cwd, latest);
     const owner = otherOwner(ctx, deps);
-    tick();
     return {
       ok: true,
       value: `created ${name}, ${scheduleText(loop)}, next ${formatLocal(loop.dueAt)}${owner === undefined ? "" : `, owned by pid ${owner}`}${chosen ? namingNote(chosen) : ""}`,
