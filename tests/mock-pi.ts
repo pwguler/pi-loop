@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, AssistantMessage, Context, Model, StopReason } from "@earendil-works/pi-ai";
-import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type MarkdownTransform, type Panel } from "../extensions/index.ts";
+import { run, type Deps, type LoopContext, type LoopHandler, type LoopHost, type LoopTool, type LoopToolParams, type MarkdownTransform, type Panel } from "../extensions/index.ts";
 
 export interface Fire {
   text: string;
@@ -214,6 +214,7 @@ export class Session implements LoopHost {
   readonly handlers = new Map<string, LoopHandler>();
   readonly commands = new Map<string, (args: string, ctx: LoopContext) => Promise<void>>();
   readonly transformers: MarkdownTransform[] = [];
+  readonly tools = new Map<string, LoopTool>();
   readonly fires: Fire[] = [];
   readonly notices: Notice[] = [];
   /** Every setWidget call, in order. */
@@ -361,6 +362,22 @@ export class Session implements LoopHost {
 
   registerCommand(name: string, options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> }): void {
     this.commands.set(name, options.handler);
+  }
+
+  registerTool(tool: LoopTool): void {
+    this.tools.set(tool.name, tool);
+  }
+
+  /** Call the loop tool as the model would; a thrown error is the tool error pi reports to the model. */
+  async tool(params: LoopToolParams, signal?: AbortSignal): Promise<{ text: string } | { error: string }> {
+    const tool = this.tools.get("loop");
+    if (!tool) throw new Error("the loop tool is not registered");
+    try {
+      const result = await tool.execute("call-1", params, signal, undefined, this.ctx);
+      return { text: result.content.map((c) => c.text).join("") };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   registerMarkdownTransformer(transformer: MarkdownTransform): void {

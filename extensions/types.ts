@@ -4,6 +4,7 @@
 
 import type { Api, AssistantMessage, Context, Model, ModelsApiStreamOptions } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { LOOP_TOOL_PARAMETERS, LoopToolParams } from "./command.ts";
 import type { Cron } from "./cron.ts";
 
 export interface Panel {
@@ -63,6 +64,23 @@ export type MarkdownTransform = (
   context: { messageType: "user" | "assistant" | "assistant-thinking"; isStreaming: boolean; availableWidth: number },
 ) => string;
 
+/** The loop tool as pi-loop registers it: the slice of pi's ToolDefinition it fills. A thrown error is the tool's error result. */
+export interface LoopTool {
+  name: string;
+  label: string;
+  description: string;
+  promptSnippet: string;
+  promptGuidelines: string[];
+  parameters: typeof LOOP_TOOL_PARAMETERS;
+  execute(
+    toolCallId: string,
+    params: LoopToolParams,
+    signal: AbortSignal | undefined,
+    onUpdate: unknown,
+    ctx: LoopContext,
+  ): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined }>;
+}
+
 export interface LoopHost {
   // One overload per event, not one over their union: a union parameter compares bivariantly, so a
   // host missing one event would still fit. Each overload needs its own match in pi's ExtensionAPI.
@@ -74,6 +92,7 @@ export interface LoopHost {
     name: string,
     options: { description?: string; handler: (args: string, ctx: LoopContext) => Promise<void> },
   ): void;
+  registerTool(tool: LoopTool): void;
   /** Display-only: pi renders the returned Markdown; the stored message and model context are untouched. */
   registerMarkdownTransformer(transformer: MarkdownTransform): void;
   sendUserMessage(text: string, options?: { deliverAs?: "steer" | "followUp" }): void;

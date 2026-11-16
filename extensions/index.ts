@@ -6,11 +6,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import { defaultName, parseCommand } from "./command.ts";
+import { defaultName, LOOP_TOOL_PARAMETERS, parseCommand, toolCommand, type Command } from "./command.ts";
 import { chooseName, NAMING_TIMEOUT_MS, namingNote, uniqueName, type Chosen } from "./naming.ts";
 import { nextDue } from "./schedule.ts";
 import { claimOwner, loadLoops, message, otherOwner, readPrompt, releaseOwner, saveLoops } from "./state.ts";
-import type { Deps, Loop, LoopContext, LoopHost, WidgetTui } from "./types.ts";
+import type { Deps, Loop, LoopContext, LoopHost, Result, WidgetTui } from "./types.ts";
 import {
   detailPanel,
   displayFire,
@@ -26,7 +26,8 @@ import {
   type Segment,
 } from "./ui.ts";
 
-export type { Deps, Loop, LoopContext, LoopHandler, LoopHost, MarkdownTransform, Panel, PromptSource } from "./types.ts";
+export type { LoopToolParams } from "./command.ts";
+export type { Deps, Loop, LoopContext, LoopHandler, LoopHost, LoopTool, MarkdownTransform, Panel, PromptSource } from "./types.ts";
 
 const WIDGET_KEY = "pi-loop";
 /** How long the status line says `fired <name> #<n>` after a fire. */
@@ -398,103 +399,122 @@ export function run(pi: LoopHost, deps: Deps): void {
     },
   });
 
+  // The model operates loops from plain-language requests. The tool call and its result show in the transcript, so it raises no notice.
+  pi.registerTool({
+    name: "loop",
+    label: "Loop",
+    description:
+      "Create, list, pause, resume, or stop loops: prompts pi-loop re-sends on a schedule to the owner, the TUI session that holds this directory's loops. create takes schedule, prompt, and optionally name, max, and until; pause, resume, and stop take name; list takes nothing. Nothing fires on create: the first fire is at the schedule's first grid point after it.",
+    promptSnippet: "Create, list, pause, resume, or stop loops: prompts re-sent on a schedule",
+    promptGuidelines: [
+      "Use loop when the user asks to repeat a prompt on a schedule, or to list, pause, resume, or stop a loop; when the name is unclear, call loop with action list first.",
+      "A user message that starts with [loop <name> #<n> <time>] is a fire of loop <name>; when its prompt says to stop once a condition holds and that condition now holds, call loop with action stop and that name.",
+    ],
+    parameters: LOOP_TOOL_PARAMETERS,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const cmd = toolCommand(params, deps.now());
+      const outcome = cmd.ok ? await execute(cmd.value, ctx, signal) : cmd;
+      if (cmd.ok && cmd.value.kind === "create" && outcome.ok) tick();
+      render();
+      if (!outcome.ok) throw new Error(outcome.error);
+      return { content: [{ type: "text", text: outcome.value }], details: undefined };
+    },
+  });
+
+  /** A typed /loop: parse, then run it and show its notice; in the TUI, /loop and /loop list open the roster instead. */
   async function handle(args: string, ctx: LoopContext): Promise<void> {
-    const now = deps.now();
-    const parsed = parseCommand(args, now);
+    const parsed = parseCommand(args, deps.now());
     if (!parsed.ok) {
       ctx.ui.notify(parsed.error, "error");
       return;
     }
-    const loaded = loadLoops(ctx.cwd);
-    if (!loaded.ok) {
-      ctx.ui.notify(loaded.error, "error");
-      return;
-    }
-    const loops = loaded.value;
     const cmd = parsed.value;
-
-    // /loop and /loop list: the roster, on its first row, in the TUI; one text line per loop in every other
-    // mode, RPC included, since only the TUI has the widget's keys. The command's render draws it.
-    if (cmd.kind === "list") {
-      const first = loops[0];
-      if (ctx.mode === "tui" && first) {
+    // The roster opens on its first row; only the TUI has the widget's keys. The command's render draws it.
+    if (cmd.kind === "list" && ctx.mode === "tui") {
+      const loaded = loadLoops(ctx.cwd);
+      const first = loaded.ok ? loaded.value[0] : undefined;
+      if (first) {
         // session_start makes a session for every TUI-mode start; a missing one is a bug to surface, not hide.
         if (!session) throw new Error("pi-loop: no session to open the roster in");
         session.roster = { selected: first.name, index: 0 };
         return;
       }
+    }
+    const outcome = await execute(cmd, ctx);
+    ctx.ui.notify(outcome.ok ? outcome.value : outcome.error, outcome.ok ? "info" : "error");
+    if (cmd.kind === "create" && outcome.ok) tick();
+  }
+
+  /**
+   * Run a command from /loop or the loop tool against the state file; returns its notice, or its error.
+   * A create is followed by a tick, which the caller runs after showing the notice. An aborted
+   * `signal` (the tool call's) ends the naming wait and saves nothing.
+   */
+  async function execute(cmd: Command, ctx: LoopContext, signal?: AbortSignal): Promise<Result<string>> {
+    const now = deps.now();
+    const loaded = loadLoops(ctx.cwd);
+    if (!loaded.ok) return loaded;
+    const loops = loaded.value;
+
+    if (cmd.kind === "list") {
       const owner = otherOwner(ctx, deps);
-      ctx.ui.notify(first ? loops.map((l) => formatLoop(l, owner)).join("\n") : "no loops", "info");
-      return;
+      return { ok: true, value: loops.length > 0 ? loops.map((l) => formatLoop(l, owner)).join("\n") : "no loops" };
     }
 
-    if (cmd.kind === "stop" || cmd.kind === "pause" || cmd.kind === "resume") {
+    if (cmd.kind !== "create") {
       const loop = loops.find((l) => l.name === cmd.name);
-      if (!loop) {
-        ctx.ui.notify(`no loop named ${cmd.name}; /loop list shows the names`, "error");
-        return;
-      }
+      if (!loop) return { ok: false, error: `no loop named ${cmd.name}; /loop list shows the names` };
       if (cmd.kind === "stop") {
         saveLoops(ctx.cwd, loops.filter((l) => l !== loop));
         session?.waiting.delete(loop.name);
         if (session?.pulse?.name === loop.name) session.pulse = undefined;
-        ctx.ui.notify(`stopped ${loop.name}`, "info");
-        return;
+        return { ok: true, value: `stopped ${loop.name}` };
       }
       if (cmd.kind === "pause") {
-        if (loop.paused) {
-          ctx.ui.notify(`${loop.name} is already paused; /loop resume ${loop.name} resumes it`, "error");
-          return;
-        }
+        if (loop.paused) return { ok: false, error: `${loop.name} is already paused; /loop resume ${loop.name} resumes it` };
         loop.paused = true;
         saveLoops(ctx.cwd, loops);
-        ctx.ui.notify(`paused ${loop.name}`, "info");
-        return;
+        return { ok: true, value: `paused ${loop.name}` };
       }
-      if (!loop.paused) {
-        ctx.ui.notify(`${loop.name} is not paused; /loop pause ${loop.name} pauses it`, "error");
-        return;
-      }
+      if (!loop.paused) return { ok: false, error: `${loop.name} is not paused; /loop pause ${loop.name} pauses it` };
       loop.paused = false;
       loop.dueAt = nextDue(loop, now);
       saveLoops(ctx.cwd, loops);
-      ctx.ui.notify(`resumed ${loop.name}, next ${formatLocal(loop.dueAt)}`, "info");
-      return;
+      return { ok: true, value: `resumed ${loop.name}, next ${formatLocal(loop.dueAt)}` };
     }
 
-    if (cmd.kind === "create") {
-      // Without --name the name is settled first, so the save, the notice, and the first fire all carry it.
-      const chosen: Chosen | undefined =
-        cmd.name === undefined ? await chooseName(cmd.prompt, ctx, deps.namingDeadline, now) : undefined;
-      // The wait for a name can span other creates, stops, and fires: read the state file again so the name and the save see them.
-      const reloaded = loadLoops(ctx.cwd);
-      if (!reloaded.ok) {
-        ctx.ui.notify(reloaded.error, "error");
-        return;
-      }
-      const latest = reloaded.value;
-      const name = cmd.name ?? (chosen?.ok ? uniqueName(chosen.name, latest) : defaultName(latest));
-      if (latest.some((l) => l.name === name)) {
-        ctx.ui.notify(`loop ${name} already exists; pick another --name or /loop stop ${name}`, "error");
-        return;
-      }
-      // Nothing fires on create: the first fire is the first grid point after the save, so a grid point the naming wait crossed is not one.
-      const loop: Loop = {
-        name,
-        ...cmd.schedule,
-        prompt: cmd.prompt,
-        dueAt: nextDue(cmd.schedule, deps.now()),
-        fires: 0,
-        paused: false,
-        max: cmd.max,
-        until: cmd.until,
-      };
-      latest.push(loop);
-      saveLoops(ctx.cwd, latest);
-      const owner = otherOwner(ctx, deps);
-      ctx.ui.notify(`created ${name}, ${scheduleText(loop)}, next ${formatLocal(loop.dueAt)}${owner === undefined ? "" : `, owned by pid ${owner}`}${chosen ? namingNote(chosen) : ""}`, "info");
-      tick();
+    // Without --name the name is settled first, so the save, the notice, and the first fire all carry it.
+    const chosen: Chosen | undefined =
+      cmd.name === undefined
+        ? await chooseName(cmd.prompt, ctx, signal ? () => AbortSignal.any([deps.namingDeadline(), signal]) : deps.namingDeadline, now)
+        : undefined;
+    if (signal?.aborted) return { ok: false, error: "cancelled; no loop created" };
+    // The wait for a name can span other creates, stops, and fires: read the state file again so the name and the save see them.
+    const reloaded = loadLoops(ctx.cwd);
+    if (!reloaded.ok) return reloaded;
+    const latest = reloaded.value;
+    const name = cmd.name ?? (chosen?.ok ? uniqueName(chosen.name, latest) : defaultName(latest));
+    if (latest.some((l) => l.name === name)) {
+      return { ok: false, error: `loop ${name} already exists; pick another --name or /loop stop ${name}` };
     }
+    // Nothing fires on create: the first fire is the first grid point after the save, so a grid point the naming wait crossed is not one.
+    const loop: Loop = {
+      name,
+      ...cmd.schedule,
+      prompt: cmd.prompt,
+      dueAt: nextDue(cmd.schedule, deps.now()),
+      fires: 0,
+      paused: false,
+      max: cmd.max,
+      until: cmd.until,
+    };
+    latest.push(loop);
+    saveLoops(ctx.cwd, latest);
+    const owner = otherOwner(ctx, deps);
+    return {
+      ok: true,
+      value: `created ${name}, ${scheduleText(loop)}, next ${formatLocal(loop.dueAt)}${owner === undefined ? "" : `, owned by pid ${owner}`}${chosen ? namingNote(chosen) : ""}`,
+    };
   }
 
   /**

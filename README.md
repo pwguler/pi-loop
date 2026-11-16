@@ -38,6 +38,10 @@ Or from GitHub: `pi install git:github.com/pwguler/pi-loop`. Start or reload pi,
 - **Name.** Without `--name`, in a session with a model, an `@path` file or a short prompt names the loop. Otherwise the model picks a short name, in a side request that adds nothing to the conversation. With no model or no usable name, the name is `loop-<k>`.
 - **Roster.** In the TUI, `/loop` opens the roster below the editor. Its header names the keys for the selected loop: `p` pause or `r` resume, `x` stop (it asks first), Enter for the detail panel, Esc to go back.
 
+## From the agent
+
+Ask in plain language, such as `make a loop that checks the build every 30 minutes` or `stop the build loop`, and the agent uses the `loop` tool. It has the command's actions and rules, and acts without asking. The schedule and the prompt are separate fields, so the prompt is kept as written: `retry in 10m` keeps its `10m`. A fire's run can call it too, so a loop told to stop once the build is green stops itself.
+
 ## How loops fire
 
 - Nothing fires on create. A loop fires at the points of a fixed grid on the local clock: `1h` at every HH:00, `15m` at :00, :15, :30, and :45, `daily` at 00:00. A cron loop fires at the minutes its expression matches.
