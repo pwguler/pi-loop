@@ -6,7 +6,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import { defaultName, parseCommand, type Command } from "./command.ts";
+import { defaultName, LOOP_TOOL_PARAMETERS, parseCommand, toolCommand, type Command } from "./command.ts";
 import { chooseName, NAMING_TIMEOUT_MS, namingNote, uniqueName, type Chosen } from "./naming.ts";
 import { nextDue } from "./schedule.ts";
 import { claimOwner, loadLoops, message, otherOwner, readPrompt, releaseOwner, saveLoops } from "./state.ts";
@@ -26,7 +26,8 @@ import {
   type Segment,
 } from "./ui.ts";
 
-export type { Deps, Loop, LoopContext, LoopHandler, LoopHost, MarkdownTransform, Panel, PromptSource } from "./types.ts";
+export type { LoopToolParams } from "./command.ts";
+export type { Deps, Loop, LoopContext, LoopHandler, LoopHost, LoopTool, MarkdownTransform, Panel, PromptSource } from "./types.ts";
 
 const WIDGET_KEY = "pi-loop";
 /** How long the status line says `fired <name> #<n>` after a fire. */
@@ -395,6 +396,27 @@ export function run(pi: LoopHost, deps: Deps): void {
     handler: async (args, ctx) => {
       await handle(args, ctx);
       render();
+    },
+  });
+
+  // The model operates loops from plain-language requests. The tool call and its result show in the transcript, so it raises no notice.
+  pi.registerTool({
+    name: "loop",
+    label: "Loop",
+    description:
+      "Create, list, pause, resume, or stop loops: prompts pi-loop re-sends to this session on a schedule. create takes schedule, prompt, and optionally name, max, and until; pause, resume, and stop take name. Nothing fires on create: the first fire is the schedule's first point after it.",
+    promptSnippet: "Create, list, pause, resume, or stop loops: prompts re-sent to this session on a schedule",
+    promptGuidelines: [
+      "Use loop when the user asks to repeat a prompt on a schedule, or to list, pause, resume, or stop a loop; when the name is unclear, call loop with action list first.",
+      "A user message that starts with [loop <name> #<n> <time>] is a fire of loop <name>; when its prompt says to stop once something holds and it does, call loop with action stop and that name.",
+    ],
+    parameters: LOOP_TOOL_PARAMETERS,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cmd = toolCommand(params, deps.now());
+      const outcome = cmd.ok ? await execute(cmd.value, ctx) : cmd;
+      render();
+      if (!outcome.ok) throw new Error(outcome.error);
+      return { content: [{ type: "text", text: outcome.value }], details: undefined };
     },
   });
 

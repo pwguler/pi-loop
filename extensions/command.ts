@@ -1,7 +1,9 @@
 // /loop argument parsing: subcommands, flags at the head or the tail, the
 // interval phrase or the cron expression at the head, and what is left as the
-// prompt.
+// prompt. The loop tool's parameters become the same commands.
 
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Type, type Static } from "typebox";
 import { parseCronHead } from "./cron.ts";
 import { countedIntervals, parseIntervalPhrase } from "./interval.ts";
 import { NAME_PATTERN, type Loop, type PromptSource, type Result, type Schedule } from "./types.ts";
@@ -43,15 +45,62 @@ export function parseCommand(args: string, now: number): Result<Command> {
   const third = stripTailFlags(second.value, flags, now);
   if (!third.ok) return third;
 
-  const promptText = third.value.trim();
-  if (promptText === "") return { ok: false, error: `missing prompt. ${USAGE}` };
-  const prompt: PromptSource = /^@\S+$/.test(promptText)
-    ? { kind: "file", path: promptText.slice(1) }
-    : { kind: "text", text: promptText };
+  const prompt = promptSource(third.value);
+  if (!prompt.ok) return prompt;
   return {
     ok: true,
-    value: { kind: "create", schedule: schedule.value.schedule, prompt, name: flags.name, max: flags.max, until: flags.until },
+    value: { kind: "create", schedule: schedule.value.schedule, prompt: prompt.value, name: flags.name, max: flags.max, until: flags.until },
   };
+}
+
+/** A prompt that is one @<path> token is a file re-read at every fire; anything else is text. */
+function promptSource(text: string): Result<PromptSource> {
+  const trimmed = text.trim();
+  if (trimmed === "") return { ok: false, error: `missing prompt. ${USAGE}` };
+  return { ok: true, value: /^@\S+$/.test(trimmed) ? { kind: "file", path: trimmed.slice(1) } : { kind: "text", text: trimmed } };
+}
+
+export const LOOP_TOOL_PARAMETERS = Type.Object({
+  action: StringEnum(["create", "list", "pause", "resume", "stop"] as const),
+  name: Type.Optional(Type.String({ description: "The loop's name. Required for pause, resume, and stop. Optional for create: letters, digits, . _ - only; omitted, a name is chosen." })),
+  schedule: Type.Optional(
+    Type.String({ description: "create only. Either an interval phrase alone (5m, every 30 minutes, 1h30m, hourly, daily; at least 1m) or five cron fields alone (0 9 * * 1-5), on the local clock." }),
+  ),
+  prompt: Type.Optional(Type.String({ description: "create only. The text sent at every fire, stored as given; or @<path> to re-read that file at every fire." })),
+  max: Type.Optional(Type.Integer({ minimum: 1, description: "create only. Remove the loop after this many fires." })),
+  until: Type.Optional(Type.String({ description: "create only. Remove the loop at this time: an ISO datetime, or HH:mm for the next such local time." })),
+});
+
+export type LoopToolParams = Static<typeof LOOP_TOOL_PARAMETERS>;
+
+/** The loop tool's parameters as the command /loop would parse; the schedule must be one interval phrase or one cron expression and nothing else. */
+export function toolCommand(params: LoopToolParams, now: number): Result<Command> {
+  const { action } = params;
+  if (action === "list") return { ok: true, value: { kind: "list" } };
+  if (action !== "create") {
+    if (params.name === undefined || params.name.trim() === "") return { ok: false, error: `${action} needs the loop's name` };
+    return { ok: true, value: { kind: action, name: params.name.trim() } };
+  }
+  const flags: Flags = {};
+  const given: Array<[string, string | undefined]> = [
+    ["--name", params.name],
+    ["--max", params.max?.toString()],
+    ["--until", params.until],
+  ];
+  for (const [flag, value] of given) {
+    if (value === undefined) continue;
+    const applied = applyFlag(flag, value, flags, now);
+    if (!applied.ok) return applied;
+  }
+  const text = params.schedule ?? "";
+  const schedule = parseSchedule(text);
+  if (!schedule.ok) return schedule;
+  if (schedule.value.rest.trim() !== "") {
+    return { ok: false, error: `schedule "${text}" holds more than an interval phrase or a cron expression; put the rest in prompt` };
+  }
+  const prompt = promptSource(params.prompt ?? "");
+  if (!prompt.ok) return prompt;
+  return { ok: true, value: { kind: "create", schedule: schedule.value.schedule, prompt: prompt.value, ...flags } };
 }
 
 /**
