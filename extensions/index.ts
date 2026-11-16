@@ -404,11 +404,11 @@ export function run(pi: LoopHost, deps: Deps): void {
     name: "loop",
     label: "Loop",
     description:
-      "Create, list, pause, resume, or stop loops: prompts pi-loop re-sends to this session on a schedule. create takes schedule, prompt, and optionally name, max, and until; pause, resume, and stop take name. Nothing fires on create: the first fire is the schedule's first point after it.",
-    promptSnippet: "Create, list, pause, resume, or stop loops: prompts re-sent to this session on a schedule",
+      "Create, list, pause, resume, or stop loops: prompts pi-loop re-sends on a schedule to the owner, the TUI session that holds this directory's loops. create takes schedule, prompt, and optionally name, max, and until; pause, resume, and stop take name; list takes nothing. Nothing fires on create: the first fire is at the schedule's first grid point after it.",
+    promptSnippet: "Create, list, pause, resume, or stop loops: prompts re-sent on a schedule",
     promptGuidelines: [
       "Use loop when the user asks to repeat a prompt on a schedule, or to list, pause, resume, or stop a loop; when the name is unclear, call loop with action list first.",
-      "A user message that starts with [loop <name> #<n> <time>] is a fire of loop <name>; when its prompt says to stop once something holds and it does, call loop with action stop and that name.",
+      "A user message that starts with [loop <name> #<n> <time>] is a fire of loop <name>; when its prompt says to stop once a condition holds and that condition now holds, call loop with action stop and that name.",
     ],
     parameters: LOOP_TOOL_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

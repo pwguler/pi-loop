@@ -66,7 +66,7 @@ export const LOOP_TOOL_PARAMETERS = Type.Object({
   schedule: Type.Optional(
     Type.String({ description: "create only. Either an interval phrase alone (5m, every 30 minutes, 1h30m, hourly, daily; at least 1m) or five cron fields alone (0 9 * * 1-5), on the local clock." }),
   ),
-  prompt: Type.Optional(Type.String({ description: "create only. The text sent at every fire, stored as given; or @<path> to re-read that file at every fire." })),
+  prompt: Type.Optional(Type.String({ description: "create only. The text sent at every fire, stored as given; or @<path> as one token with no spaces to re-read that file at every fire." })),
   max: Type.Optional(Type.Integer({ minimum: 1, description: "create only. Remove the loop after this many fires." })),
   until: Type.Optional(Type.String({ description: "create only. Remove the loop at this time: an ISO datetime, or HH:mm for the next such local time." })),
 });
