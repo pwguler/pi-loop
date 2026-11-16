@@ -6,7 +6,7 @@ import { parseCronHead } from "./cron.ts";
 import { countedIntervals, parseIntervalPhrase } from "./interval.ts";
 import { NAME_PATTERN, type Loop, type PromptSource, type Result, type Schedule } from "./types.ts";
 
-type Command =
+export type Command =
   | { kind: "list" }
   | { kind: "stop" | "pause" | "resume"; name: string }
   | { kind: "create"; schedule: Schedule; prompt: PromptSource; name?: string; max?: number; until?: number };
